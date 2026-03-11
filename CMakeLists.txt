@@ -44,4 +44,7 @@ target_link_libraries(trip_logic_tests
 )
 
 include(GoogleTest)
-gtest_discover_tests(trip_logic_tests)
+gtest_add_tests(
+    TARGET trip_logic_tests
+    TEST_LIST trip_logic_tests_cases
+)
