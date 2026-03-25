@@ -26,3 +26,6 @@ third_party/
 
 .vscode/*.db
 .vscode/ipch/
+
+build-vcpkg/
+vcpkg_installed/
