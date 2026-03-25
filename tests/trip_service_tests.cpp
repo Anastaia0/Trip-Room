@@ -319,3 +319,247 @@ TEST(TripServiceTests, HandlesConcurrentTaskCreationWithRevisionRetry)
     ASSERT_TRUE(snapshot.ok());
     EXPECT_EQ(snapshot.value.tasks.size(), static_cast<std::size_t>(threads_count * tasks_per_thread));
 }
+
+TEST(TripServiceTests, ConcurrentTaskUpdatesOnSameRevisionYieldConflictAndConsistentState)
+{
+    TripService service;
+    auto auth = prepareUsers(service);
+
+    TripInfo info{"Trip", "2026-01-01", "2026-01-03", "desc"};
+    auto trip = service.createTrip(auth.owner_token, info);
+    ASSERT_TRUE(trip.ok());
+
+    auto rev = service.getTripRevision(auth.owner_token, trip.value);
+    ASSERT_TRUE(rev.ok());
+
+    Task initial;
+    initial.text = "Shared task";
+    auto task_id = service.addTask(auth.owner_token, trip.value, rev.value, initial);
+    ASSERT_TRUE(task_id.ok());
+
+    constexpr int rounds = 40;
+    for (int round = 0; round < rounds; ++round)
+    {
+        auto round_rev = service.getTripRevision(auth.owner_token, trip.value);
+        ASSERT_TRUE(round_rev.ok());
+
+        auto before = service.getTripSnapshot(auth.owner_token, trip.value);
+        ASSERT_TRUE(before.ok());
+        ASSERT_EQ(before.value.tasks.size(), 1U);
+
+        Task task_a = before.value.tasks[0];
+        Task task_b = before.value.tasks[0];
+        task_a.text = "A_" + std::to_string(round);
+        task_b.text = "B_" + std::to_string(round);
+
+        std::atomic<int> ok_count{0};
+        std::atomic<int> conflict_count{0};
+        std::atomic<int> other_count{0};
+
+        std::thread thread_a([&]()
+                             {
+            auto result = service.updateTask(auth.owner_token, trip.value, round_rev.value, task_a);
+            if (result.status == Status::Ok)
+            {
+                ok_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else if (result.status == Status::Conflict)
+            {
+                conflict_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                other_count.fetch_add(1, std::memory_order_relaxed);
+            } });
+
+        std::thread thread_b([&]()
+                             {
+            auto result = service.updateTask(auth.owner_token, trip.value, round_rev.value, task_b);
+            if (result.status == Status::Ok)
+            {
+                ok_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else if (result.status == Status::Conflict)
+            {
+                conflict_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                other_count.fetch_add(1, std::memory_order_relaxed);
+            } });
+
+        thread_a.join();
+        thread_b.join();
+
+        EXPECT_EQ(ok_count.load(), 1);
+        EXPECT_EQ(conflict_count.load(), 1);
+        EXPECT_EQ(other_count.load(), 0);
+
+        auto after = service.getTripSnapshot(auth.owner_token, trip.value);
+        ASSERT_TRUE(after.ok());
+        ASSERT_EQ(after.value.tasks.size(), 1U);
+        EXPECT_TRUE(after.value.tasks[0].text == task_a.text || after.value.tasks[0].text == task_b.text);
+    }
+}
+
+TEST(TripServiceTests, ConcurrentSetDoneAndRemoveOnSameTaskKeepTripStateConsistent)
+{
+    TripService service;
+    auto auth = prepareUsers(service);
+
+    TripInfo info{"Trip", "2026-01-01", "2026-01-03", "desc"};
+    auto trip = service.createTrip(auth.owner_token, info);
+    ASSERT_TRUE(trip.ok());
+
+    constexpr int rounds = 30;
+    for (int round = 0; round < rounds; ++round)
+    {
+        auto rev = service.getTripRevision(auth.owner_token, trip.value);
+        ASSERT_TRUE(rev.ok());
+
+        Task task;
+        task.text = "Task " + std::to_string(round);
+        auto add = service.addTask(auth.owner_token, trip.value, rev.value, task);
+        ASSERT_TRUE(add.ok());
+
+        auto op_rev = service.getTripRevision(auth.owner_token, trip.value);
+        ASSERT_TRUE(op_rev.ok());
+
+        std::atomic<int> ok_count{0};
+        std::atomic<int> conflict_count{0};
+        std::atomic<int> other_count{0};
+
+        std::thread set_done_thread([&]()
+                                    {
+            auto result = service.setTaskDone(auth.owner_token, trip.value, op_rev.value, add.value, true);
+            if (result.status == Status::Ok)
+            {
+                ok_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else if (result.status == Status::Conflict)
+            {
+                conflict_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                other_count.fetch_add(1, std::memory_order_relaxed);
+            } });
+
+        std::thread remove_thread([&]()
+                                  {
+            auto result = service.removeTask(auth.owner_token, trip.value, op_rev.value, add.value);
+            if (result.status == Status::Ok)
+            {
+                ok_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else if (result.status == Status::Conflict)
+            {
+                conflict_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                other_count.fetch_add(1, std::memory_order_relaxed);
+            } });
+
+        set_done_thread.join();
+        remove_thread.join();
+
+        EXPECT_EQ(ok_count.load(), 1);
+        EXPECT_EQ(conflict_count.load(), 1);
+        EXPECT_EQ(other_count.load(), 0);
+
+        auto snapshot = service.getTripSnapshot(auth.owner_token, trip.value);
+        ASSERT_TRUE(snapshot.ok());
+
+        int matching = 0;
+        bool removed = true;
+        for (const auto &current : snapshot.value.tasks)
+        {
+            if (current.id == add.value)
+            {
+                ++matching;
+                removed = false;
+                EXPECT_TRUE(current.done);
+            }
+        }
+        EXPECT_LE(matching, 1);
+        if (removed)
+        {
+            SUCCEED();
+        }
+    }
+}
+
+TEST(TripServiceTests, ConcurrentRenameSameDayProducesConflictAndKeepsSingleDay)
+{
+    TripService service;
+    auto auth = prepareUsers(service);
+
+    TripInfo info{"Trip", "2026-01-01", "2026-01-03", "desc"};
+    auto trip = service.createTrip(auth.owner_token, info);
+    ASSERT_TRUE(trip.ok());
+
+    auto rev = service.getTripRevision(auth.owner_token, trip.value);
+    ASSERT_TRUE(rev.ok());
+    auto day = service.addDay(auth.owner_token, trip.value, rev.value, "Initial");
+    ASSERT_TRUE(day.ok());
+
+    constexpr int rounds = 40;
+    for (int round = 0; round < rounds; ++round)
+    {
+        auto round_rev = service.getTripRevision(auth.owner_token, trip.value);
+        ASSERT_TRUE(round_rev.ok());
+
+        const std::string name_a = "Morning_" + std::to_string(round);
+        const std::string name_b = "Evening_" + std::to_string(round);
+
+        std::atomic<int> ok_count{0};
+        std::atomic<int> conflict_count{0};
+        std::atomic<int> other_count{0};
+
+        std::thread rename_a([&]()
+                             {
+            auto result = service.renameDay(auth.owner_token, trip.value, round_rev.value, day.value, name_a);
+            if (result.status == Status::Ok)
+            {
+                ok_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else if (result.status == Status::Conflict)
+            {
+                conflict_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                other_count.fetch_add(1, std::memory_order_relaxed);
+            } });
+
+        std::thread rename_b([&]()
+                             {
+            auto result = service.renameDay(auth.owner_token, trip.value, round_rev.value, day.value, name_b);
+            if (result.status == Status::Ok)
+            {
+                ok_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else if (result.status == Status::Conflict)
+            {
+                conflict_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                other_count.fetch_add(1, std::memory_order_relaxed);
+            } });
+
+        rename_a.join();
+        rename_b.join();
+
+        EXPECT_EQ(ok_count.load(), 1);
+        EXPECT_EQ(conflict_count.load(), 1);
+        EXPECT_EQ(other_count.load(), 0);
+
+        auto snapshot = service.getTripSnapshot(auth.owner_token, trip.value);
+        ASSERT_TRUE(snapshot.ok());
+        ASSERT_EQ(snapshot.value.days.size(), 1U);
+        EXPECT_EQ(snapshot.value.days[0].id, day.value);
+        EXPECT_TRUE(snapshot.value.days[0].name == name_a || snapshot.value.days[0].name == name_b);
+    }
+}
