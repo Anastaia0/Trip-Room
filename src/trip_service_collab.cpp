@@ -1,5 +1,6 @@
 #include "trip/trip_service.hpp"
 
+#include <algorithm>
 #include <sstream>
 
 namespace trip
@@ -85,6 +86,48 @@ namespace trip
             }
         }
         return StatusOr<std::vector<SearchHit>>{Status::Ok, {}, results};
+    }
+
+    StatusOr<std::vector<TripSummary>> TripService::listTrips(const std::string &token) const
+    {
+        std::scoped_lock lock(mutex_);
+        auto user = authUserIdByToken(token);
+        if (!user.ok())
+        {
+            return StatusOr<std::vector<TripSummary>>{user.status, user.message, {}};
+        }
+
+        std::vector<TripSummary> trips;
+        trips.reserve(trips_by_id_.size());
+        for (const auto &[trip_id, trip] : trips_by_id_)
+        {
+            const auto member_it = trip.members.find(user.value);
+            if (member_it == trip.members.end())
+            {
+                continue;
+            }
+
+            TripSummary summary;
+            summary.id = trip_id;
+            summary.info = trip.info;
+            summary.my_role = member_it->second;
+            summary.revision = trip.revision;
+            summary.members_count = trip.members.size();
+            summary.days_count = trip.days.size();
+            summary.tasks_count = trip.tasks.size();
+            summary.expenses_count = trip.expenses.size();
+            trips.push_back(std::move(summary));
+        }
+
+        std::sort(
+            trips.begin(),
+            trips.end(),
+            [](const TripSummary &left, const TripSummary &right)
+            {
+                return left.id < right.id;
+            });
+
+        return StatusOr<std::vector<TripSummary>>{Status::Ok, {}, trips};
     }
 
     StatusOr<Trip> TripService::getTripSnapshot(const std::string &token, const std::string &trip_id) const

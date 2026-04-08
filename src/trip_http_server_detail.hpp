@@ -20,6 +20,7 @@ namespace trip::detail
     std::unordered_map<std::string, std::string> parseForm(std::string_view payload);
     std::string escapeJson(const std::string &text);
     std::string statusToString(Status status);
+    std::string roleToString(Role role);
 
     StringResponse jsonResponse(http::status code, std::string body, unsigned version, bool keep_alive);
     std::pair<std::string, std::unordered_map<std::string, std::string>> splitTarget(const std::string &target);
@@ -36,6 +37,8 @@ namespace trip::detail
     std::string mapToJsonObject(const std::unordered_map<std::string, double> &values);
     std::string searchHitsToJson(const std::vector<SearchHit> &hits);
     std::string budgetSummaryToJson(const BudgetSummary &summary);
+    std::string tripToJson(const Trip &trip);
+    std::string tripSummariesToJson(const std::vector<TripSummary> &summaries);
 
     StringResponse handleApiRequest(
         TripService &service,

@@ -155,8 +155,13 @@ namespace trip::detail
                 result,
                 [](const Trip &trip)
                 {
-                    return "\"trip_id\":\"" + escapeJson(trip.id) + "\",\"revision\":" + std::to_string(trip.revision) +
-                           ",\"tasks_count\":" + std::to_string(trip.tasks.size());
+                    return "\"trip_id\":\"" + escapeJson(trip.id) +
+                           "\",\"revision\":" + std::to_string(trip.revision) +
+                           ",\"tasks_count\":" + std::to_string(trip.tasks.size()) +
+                           ",\"days_count\":" + std::to_string(trip.days.size()) +
+                           ",\"expenses_count\":" + std::to_string(trip.expenses.size()) +
+                           ",\"members_count\":" + std::to_string(trip.members.size()) +
+                           ",\"trip\":" + tripToJson(trip);
                 },
                 ctx.req.version(),
                 ctx.req.keep_alive());

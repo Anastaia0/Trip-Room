@@ -19,6 +19,28 @@ include(FetchContent)
 find_package(boost_system CONFIG QUIET)
 find_package(boost_asio CONFIG QUIET)
 find_package(boost_beast CONFIG QUIET)
+find_package(Qt6 COMPONENTS Core Network Widgets WebSockets QUIET)
+if(NOT Qt6_FOUND)
+    find_package(Qt5 COMPONENTS Core Network Widgets WebSockets QUIET)
+endif()
+
+set(TRIP_HAS_QT_CLIENT OFF)
+set(TRIP_QT_CORE_TARGET "")
+set(TRIP_QT_NETWORK_TARGET "")
+set(TRIP_QT_WIDGETS_TARGET "")
+set(TRIP_QT_WEBSOCKETS_TARGET "")
+
+if(Qt6_FOUND AND TARGET Qt6::Core AND TARGET Qt6::Network AND TARGET Qt6::Widgets AND TARGET Qt6::WebSockets)
+    set(TRIP_QT_CORE_TARGET Qt6::Core)
+    set(TRIP_QT_NETWORK_TARGET Qt6::Network)
+    set(TRIP_QT_WIDGETS_TARGET Qt6::Widgets)
+    set(TRIP_QT_WEBSOCKETS_TARGET Qt6::WebSockets)
+elseif(Qt5_FOUND AND TARGET Qt5::Core AND TARGET Qt5::Network AND TARGET Qt5::Widgets AND TARGET Qt5::WebSockets)
+    set(TRIP_QT_CORE_TARGET Qt5::Core)
+    set(TRIP_QT_NETWORK_TARGET Qt5::Network)
+    set(TRIP_QT_WIDGETS_TARGET Qt5::Widgets)
+    set(TRIP_QT_WEBSOCKETS_TARGET Qt5::WebSockets)
+endif()
 
 add_library(trip_logic
     src/trip_service_core.cpp
@@ -59,6 +81,38 @@ else()
     message(WARNING "Boost system/asio/beast not found: Boost-based HTTP server and server tests are disabled.")
 endif()
 
+if(TRIP_QT_CORE_TARGET AND TRIP_QT_NETWORK_TARGET AND TRIP_QT_WIDGETS_TARGET)
+    add_library(trip_qt_client
+        src/qt_trip_client.cpp
+    )
+
+    target_include_directories(trip_qt_client
+        PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(trip_qt_client
+        PUBLIC
+            ${TRIP_QT_CORE_TARGET}
+            ${TRIP_QT_NETWORK_TARGET}
+            ${TRIP_QT_WEBSOCKETS_TARGET}
+    )
+
+    add_executable(trip_qt_client_app
+        src/qt_trip_client_main.cpp
+    )
+
+    target_link_libraries(trip_qt_client_app
+        PRIVATE
+            trip_qt_client
+            ${TRIP_QT_WIDGETS_TARGET}
+    )
+
+    set(TRIP_HAS_QT_CLIENT ON)
+else()
+    message(STATUS "Qt (Qt6/Qt5 Core/Network/Widgets/WebSockets) not found: Qt client app/tests are disabled.")
+endif()
+
 FetchContent_Declare(
   googletest
   URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
@@ -76,6 +130,9 @@ set(TRIP_TEST_SOURCES
 
 if(boost_system_FOUND AND boost_asio_FOUND AND boost_beast_FOUND AND TARGET Boost::system)
     list(APPEND TRIP_TEST_SOURCES tests/trip_http_server_tests.cpp)
+    if(TRIP_HAS_QT_CLIENT)
+        list(APPEND TRIP_TEST_SOURCES tests/trip_qt_client_tests.cpp)
+    endif()
 endif()
 
 add_executable(trip_logic_tests
@@ -87,6 +144,13 @@ target_link_libraries(trip_logic_tests
         trip_logic
         GTest::gtest_main
 )
+
+if(TRIP_HAS_QT_CLIENT)
+    target_link_libraries(trip_logic_tests
+        PRIVATE
+            trip_qt_client
+    )
+endif()
 
 include(GoogleTest)
 gtest_add_tests(

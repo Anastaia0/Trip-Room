@@ -4,6 +4,20 @@ namespace trip::detail
 {
     bool handleTripCollabRoutes(const RequestContext &ctx, const std::string &path, StringResponse &response)
     {
+        if (path == "/trips/list" && ctx.req.method() == http::verb::get)
+        {
+            const auto result = ctx.service.listTrips(ctx.param("token"));
+            response = makeStatusOrResponse<std::vector<TripSummary>>(
+                result,
+                [](const std::vector<TripSummary> &trips)
+                {
+                    return "\"trips\":" + tripSummariesToJson(trips) + ",\"trips_count\":" + std::to_string(trips.size());
+                },
+                ctx.req.version(),
+                ctx.req.keep_alive());
+            return true;
+        }
+
         if (path == "/trips/create" && ctx.req.method() == http::verb::post)
         {
             TripInfo info;

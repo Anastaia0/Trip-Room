@@ -18,6 +18,7 @@
 #include "entities/task.hpp"
 #include "entities/trip.hpp"
 #include "entities/trip_info.hpp"
+#include "entities/trip_summary.hpp"
 
 namespace trip
 {
@@ -126,6 +127,7 @@ namespace trip
         StatusOr<std::vector<ChatMessage>> getMessages(const std::string &token, const std::string &trip_id) const;
 
         StatusOr<std::vector<SearchHit>> searchInTrip(const std::string &token, const std::string &trip_id, const std::string &query) const;
+        StatusOr<std::vector<TripSummary>> listTrips(const std::string &token) const;
 
         StatusOr<Trip> getTripSnapshot(const std::string &token, const std::string &trip_id) const;
         StatusOr<std::vector<Event>> getEventsSince(const std::string &token, const std::string &trip_id, uint64_t since_revision) const;

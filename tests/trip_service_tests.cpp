@@ -90,6 +90,45 @@ TEST(TripServiceTests, OwnerCanInviteAndManageRoles)
     EXPECT_FALSE(snapshot.value.members.contains(auth.viewer_user_id));
 }
 
+TEST(TripServiceTests, ListsTripsVisibleToCurrentUserWithRoleAndCounters)
+{
+    TripService service;
+    auto auth = prepareUsers(service);
+
+    TripInfo info{"Nordic Trip", "2026-12-01", "2026-12-05", "Winter"};
+    auto trip = service.createTrip(auth.owner_token, info);
+    ASSERT_TRUE(trip.ok());
+
+    auto invite = service.createInvite(auth.owner_token, trip.value, Role::Editor);
+    ASSERT_TRUE(invite.ok());
+    auto accepted = service.acceptInvite(auth.editor_token, invite.value);
+    ASSERT_TRUE(accepted.ok());
+
+    auto rev = service.getTripRevision(auth.owner_token, trip.value);
+    ASSERT_TRUE(rev.ok());
+    auto day = service.addDay(auth.owner_token, trip.value, rev.value, "Day 1");
+    ASSERT_TRUE(day.ok());
+
+    rev = service.getTripRevision(auth.owner_token, trip.value);
+    auto task = service.addTask(auth.owner_token, trip.value, rev.value, Task{"", "Pack bags"});
+    ASSERT_TRUE(task.ok());
+
+    auto owner_trips = service.listTrips(auth.owner_token);
+    ASSERT_TRUE(owner_trips.ok());
+    ASSERT_EQ(owner_trips.value.size(), 1U);
+    EXPECT_EQ(owner_trips.value[0].id, trip.value);
+    EXPECT_EQ(owner_trips.value[0].my_role, Role::Owner);
+    EXPECT_EQ(owner_trips.value[0].days_count, 1U);
+    EXPECT_EQ(owner_trips.value[0].tasks_count, 1U);
+
+    auto editor_trips = service.listTrips(auth.editor_token);
+    ASSERT_TRUE(editor_trips.ok());
+    ASSERT_EQ(editor_trips.value.size(), 1U);
+    EXPECT_EQ(editor_trips.value[0].id, trip.value);
+    EXPECT_EQ(editor_trips.value[0].my_role, Role::Editor);
+    EXPECT_EQ(editor_trips.value[0].members_count, 2U);
+}
+
 TEST(TripServiceTests, ViewerCannotEditTripData)
 {
     TripService service;
