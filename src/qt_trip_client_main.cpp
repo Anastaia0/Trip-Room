@@ -5,7 +5,10 @@
 #include <QApplication>
 #include <QAbstractSocket>
 #include <QCheckBox>
+#include <QCommandLineOption>
+#include <QCommandLineParser>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDate>
 #include <QDateEdit>
 #include <QFile>
@@ -24,6 +27,7 @@
 #include <QListWidgetItem>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -33,18 +37,27 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <utility>
+
 namespace
 {
+    QString defaultServerUrl()
+    {
+        return QStringLiteral("http://127.0.0.1:8080");
+    }
+
     class TripClientWindow : public QWidget
     {
     public:
-        TripClientWindow()
-            : client_(QStringLiteral("http://127.0.0.1:8080"))
+        explicit TripClientWindow(QString server_url = {})
+            : client_(server_url.isEmpty() ? defaultServerUrl() : std::move(server_url))
         {
             buildUi();
             wireUi();
             reconnect_timer_.setInterval(2000);
             reconnect_timer_.setSingleShot(true);
+            reload_debounce_timer_.setInterval(100);
+            reload_debounce_timer_.setSingleShot(true);
             appendLog(QStringLiteral("Qt client is ready"));
         }
 
@@ -65,7 +78,7 @@ namespace
 
             auto *server_group = new QGroupBox(QStringLiteral("Session"));
             auto *server_layout = new QFormLayout(server_group);
-            base_url_edit_ = new QLineEdit(QStringLiteral("http://127.0.0.1:8080"));
+            base_url_edit_ = new QLineEdit(client_.baseUrl());
             login_edit_ = new QLineEdit(QStringLiteral("owner_qt"));
             password_edit_ = new QLineEdit(QStringLiteral("pass"));
             password_edit_->setEchoMode(QLineEdit::Password);
@@ -489,6 +502,7 @@ namespace
         trip::QtTripClient client_;
         QWebSocket socket_;
         QTimer reconnect_timer_;
+        QTimer reload_debounce_timer_;
         bool live_sync_requested_ = false;
         bool manual_socket_close_ = false;
         quint64 current_revision_ = 0;
@@ -590,6 +604,12 @@ namespace
     {
         connect(&reconnect_timer_, &QTimer::timeout, this, [this]()
                 { connectLiveUpdates(); });
+        connect(&reload_debounce_timer_, &QTimer::timeout, this, [this]()
+                {
+            if (hasCurrentTrip())
+            {
+                loadCurrentTrip();
+            } });
 
         connect(&socket_, &QWebSocket::connected, this, [this]()
                 {
@@ -613,6 +633,7 @@ namespace
         connect(base_url_edit_, &QLineEdit::textChanged, this, [this](const QString &value)
                 {
             client_.setBaseUrl(value);
+            QSettings().setValue(QStringLiteral("server_url"), value);
             if (socket_.state() == QAbstractSocket::ConnectedState)
             {
                 connectLiveUpdates();
@@ -1841,7 +1862,7 @@ namespace
 
         if (hasCurrentTrip())
         {
-            loadCurrentTrip();
+            reload_debounce_timer_.start();
         }
     }
 }
@@ -1849,7 +1870,31 @@ namespace
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    TripClientWindow window;
+    QCoreApplication::setOrganizationName(QStringLiteral("TripRoom"));
+    QCoreApplication::setApplicationName(QStringLiteral("TripRoomQtClient"));
+
+    QCommandLineParser parser;
+    parser.setApplicationDescription(QStringLiteral("Trip Planner Qt Client"));
+    parser.addHelpOption();
+    QCommandLineOption server_url_option(
+        QStringList{QStringLiteral("s"), QStringLiteral("server-url")},
+        QStringLiteral("Base server URL"),
+        QStringLiteral("url"));
+    parser.addOption(server_url_option);
+    parser.process(app);
+
+    QSettings settings;
+    QString server_url = parser.value(server_url_option);
+    if (server_url.isEmpty())
+    {
+        server_url = settings.value(QStringLiteral("server_url"), defaultServerUrl()).toString();
+    }
+    else
+    {
+        settings.setValue(QStringLiteral("server_url"), server_url);
+    }
+
+    TripClientWindow window(server_url);
     window.show();
     return app.exec();
 }
