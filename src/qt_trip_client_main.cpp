@@ -1777,22 +1777,22 @@ namespace
 
         live_sync_requested_ = true;
         reconnect_timer_.stop();
-        const QUrl url = client_.updatesWebSocketUrl(token_, current_trip_id_, last_seen_revision_);
+        const QNetworkRequest request = client_.updatesWebSocketRequest(token_, current_trip_id_, last_seen_revision_);
         if (socket_.state() != QAbstractSocket::UnconnectedState)
         {
             manual_socket_close_ = true;
             socket_.close();
-            QTimer::singleShot(150, this, [this, url]()
+            QTimer::singleShot(150, this, [this, request]()
                                {
                 manual_socket_close_ = false;
                 socket_label_->setText(QStringLiteral("Live sync: connecting..."));
-                socket_.open(url); });
+                socket_.open(request); });
             return;
         }
 
         manual_socket_close_ = false;
         socket_label_->setText(QStringLiteral("Live sync: connecting..."));
-        socket_.open(url);
+        socket_.open(request);
     }
 
     void TripClientWindow::disconnectLiveUpdates(bool manual_disconnect)

@@ -280,11 +280,16 @@ namespace
         tcp::resolver resolver;
         websocket::stream<tcp::socket> ws;
 
-        WsClient(uint16_t port, const std::string &target)
+        WsClient(uint16_t port, const std::string &target, const std::string &token)
             : resolver(io), ws(io)
         {
             const auto endpoints = resolver.resolve("127.0.0.1", std::to_string(port));
             asio::connect(ws.next_layer(), endpoints);
+            ws.set_option(websocket::stream_base::decorator(
+                [token](websocket::request_type &req)
+                {
+                    req.set(http::field::authorization, "Bearer " + token);
+                }));
             ws.handshake("127.0.0.1", target);
         }
 
@@ -1087,9 +1092,9 @@ TEST_F(TripHttpServerTripFixture, StreamsRealtimeWebsocketEvents)
 
     WsClient live_client(
         port(),
-        "/ws/updates?token=" + urlEncode(owner().token) +
-            "&trip_id=" + urlEncode(tripId()) +
-            "&since_revision=" + std::to_string(base_revision));
+        "/ws/updates?trip_id=" + urlEncode(tripId()) +
+            "&since_revision=" + std::to_string(base_revision),
+        owner().token);
 
     const auto add = addTaskRequest(port(), owner().token, tripId(), base_revision, "task-live");
     ASSERT_EQ(add.status_code, 200U);
@@ -1121,9 +1126,9 @@ TEST_F(TripHttpServerTripFixture, ReplaysMissedEventsAfterReconnectBySinceRevisi
 
     WsClient reconnect_client(
         port(),
-        "/ws/updates?token=" + urlEncode(owner().token) +
-            "&trip_id=" + urlEncode(tripId()) +
-            "&since_revision=" + std::to_string(revision_after_first));
+        "/ws/updates?trip_id=" + urlEncode(tripId()) +
+            "&since_revision=" + std::to_string(revision_after_first),
+        owner().token);
 
     const std::string backlog_push = reconnect_client.readTextFrame();
     EXPECT_NE(backlog_push.find("\"type\":\"event\""), std::string::npos);

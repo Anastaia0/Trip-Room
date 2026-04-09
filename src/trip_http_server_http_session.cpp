@@ -51,11 +51,19 @@ namespace trip
                 return;
             }
 
-            const auto token_it = query.find("token");
             const auto trip_it = query.find("trip_id");
-            if (token_it == query.end() || trip_it == query.end())
+            if (query.find("token") != query.end())
             {
-                auto invalid = detail::jsonResponse(http::status::bad_request, "{\"status\":\"InvalidArgument\",\"message\":\"token and trip_id are required\"}", req_.version(), false);
+                auto invalid = detail::jsonResponse(http::status::bad_request, "{\"status\":\"InvalidArgument\",\"message\":\"Use Authorization header instead of token query parameter\"}", req_.version(), false);
+                res_ = std::make_shared<http::response<http::string_body>>(std::move(invalid));
+                http::async_write(stream_, *res_, beast::bind_front_handler(&HttpSession::onWrite, shared_from_this(), true));
+                return;
+            }
+
+            const std::string token = detail::authorizationBearerToken(req_);
+            if (token.empty() || trip_it == query.end())
+            {
+                auto invalid = detail::jsonResponse(http::status::bad_request, "{\"status\":\"InvalidArgument\",\"message\":\"Authorization header and trip_id are required\"}", req_.version(), false);
                 res_ = std::make_shared<http::response<http::string_body>>(std::move(invalid));
                 http::async_write(stream_, *res_, beast::bind_front_handler(&HttpSession::onWrite, shared_from_this(), true));
                 return;
@@ -78,7 +86,7 @@ namespace trip
                 }
             }
 
-            auto access = service_.getTripRevision(token_it->second, trip_it->second);
+            auto access = service_.getTripRevision(token, trip_it->second);
             if (!access.ok())
             {
                 auto forbidden = detail::jsonResponse(http::status::forbidden, "{\"status\":\"" + detail::escapeJson(detail::statusToString(access.status)) + "\",\"message\":\"" + detail::escapeJson(access.message) + "\"}", req_.version(), false);
@@ -87,7 +95,7 @@ namespace trip
                 return;
             }
 
-            std::make_shared<WsSession>(std::move(stream_), impl_, token_it->second, trip_it->second, since_revision)->run(std::move(req_));
+            std::make_shared<WsSession>(std::move(stream_), impl_, token, trip_it->second, since_revision)->run(std::move(req_));
             return;
         }
 

@@ -28,6 +28,10 @@ namespace trip::detail
             {
                 return in_query->second;
             }
+            if (key == "token")
+            {
+                return authorizationBearerToken(req);
+            }
             return {};
         }
     };

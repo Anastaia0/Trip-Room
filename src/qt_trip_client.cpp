@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QNetworkReply>
+#include <QTimer>
 #include <QUrlQuery>
 
 namespace trip
@@ -25,6 +26,14 @@ namespace trip
         QString joinCsv(const QStringList &items)
         {
             return items.join(QLatin1Char(','));
+        }
+
+        void setBearerToken(QNetworkRequest &request, const QString &token)
+        {
+            if (!token.isEmpty())
+            {
+                request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
+            }
         }
     }
 
@@ -60,7 +69,7 @@ namespace trip
 
     QtApiResult QtTripClient::listTrips(const QString &token)
     {
-        return get(QStringLiteral("/trips/list"), toPairs({{"token", token}}));
+        return get(QStringLiteral("/trips/list"), {}, token);
     }
 
     QtApiResult QtTripClient::createTrip(
@@ -149,12 +158,12 @@ namespace trip
 
     QtApiResult QtTripClient::getRevision(const QString &token, const QString &trip_id)
     {
-        return get(QStringLiteral("/trips/revision"), toPairs({{"token", token}, {"trip_id", trip_id}}));
+        return get(QStringLiteral("/trips/revision"), toPairs({{"trip_id", trip_id}}), token);
     }
 
     QtApiResult QtTripClient::getSnapshot(const QString &token, const QString &trip_id)
     {
-        return get(QStringLiteral("/trips/snapshot"), toPairs({{"token", token}, {"trip_id", trip_id}}));
+        return get(QStringLiteral("/trips/snapshot"), toPairs({{"trip_id", trip_id}}), token);
     }
 
     QtApiResult QtTripClient::getEventsSince(const QString &token, const QString &trip_id, quint64 since_revision)
@@ -162,9 +171,9 @@ namespace trip
         return get(
             QStringLiteral("/events/since"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
-                {"since_revision", QString::number(since_revision)}}));
+                {"since_revision", QString::number(since_revision)}}),
+            token);
     }
 
     QtApiResult QtTripClient::addDay(const QString &token, const QString &trip_id, quint64 expected_revision, const QString &day_name)
@@ -429,7 +438,7 @@ namespace trip
 
     QtApiResult QtTripClient::getBudgetSummary(const QString &token, const QString &trip_id)
     {
-        return get(QStringLiteral("/budget/summary"), toPairs({{"token", token}, {"trip_id", trip_id}}));
+        return get(QStringLiteral("/budget/summary"), toPairs({{"trip_id", trip_id}}), token);
     }
 
     QtApiResult QtTripClient::sendChatMessage(const QString &token, const QString &trip_id, const QString &text)
@@ -441,19 +450,20 @@ namespace trip
 
     QtApiResult QtTripClient::listChatMessages(const QString &token, const QString &trip_id)
     {
-        return get(QStringLiteral("/chat/list"), toPairs({{"token", token}, {"trip_id", trip_id}}));
+        return get(QStringLiteral("/chat/list"), toPairs({{"trip_id", trip_id}}), token);
     }
 
     QtApiResult QtTripClient::searchInTrip(const QString &token, const QString &trip_id, const QString &query)
     {
         return get(
             QStringLiteral("/search"),
-            toPairs({{"token", token}, {"trip_id", trip_id}, {"query", query}}));
+            toPairs({{"trip_id", trip_id}, {"query", query}}),
+            token);
     }
 
     QtApiResult QtTripClient::exportTripJson(const QString &token, const QString &trip_id)
     {
-        return get(QStringLiteral("/trips/export_json"), toPairs({{"token", token}, {"trip_id", trip_id}}));
+        return get(QStringLiteral("/trips/export_json"), toPairs({{"trip_id", trip_id}}), token);
     }
 
     QtApiResult QtTripClient::importTripJson(const QString &token, const QString &trip_json)
@@ -463,7 +473,7 @@ namespace trip
             toPairs({{"token", token}, {"trip_json", trip_json}}));
     }
 
-    QUrl QtTripClient::updatesWebSocketUrl(
+    QNetworkRequest QtTripClient::updatesWebSocketRequest(
         const QString &token,
         const QString &trip_id,
         quint64 since_revision) const
@@ -479,14 +489,17 @@ namespace trip
         }
 
         QUrlQuery query;
-        query.addQueryItem(QStringLiteral("token"), token);
         query.addQueryItem(QStringLiteral("trip_id"), trip_id);
         query.addQueryItem(QStringLiteral("since_revision"), QString::number(since_revision));
         url.setQuery(query);
-        return url;
+
+        QNetworkRequest request(url);
+        request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("trip-qt-client"));
+        setBearerToken(request, token);
+        return request;
     }
 
-    QtApiResult QtTripClient::get(const QString &path, const QList<QPair<QString, QString>> &query_items)
+    QtApiResult QtTripClient::get(const QString &path, const QList<QPair<QString, QString>> &query_items, const QString &token)
     {
         QUrl url = makeUrl(path);
         QUrlQuery query;
@@ -498,6 +511,7 @@ namespace trip
 
         QNetworkRequest request(url);
         request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("trip-qt-client"));
+        setBearerToken(request, token);
         return runRequest(std::move(request));
     }
 
@@ -523,11 +537,32 @@ namespace trip
         QNetworkReply *reply = body.isEmpty() ? network_.get(request) : network_.post(request, body);
 
         QEventLoop loop;
-        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QTimer timer;
+        bool timed_out = false;
+        timer.setSingleShot(true);
+
+        QObject::connect(reply, &QNetworkReply::finished, &loop, [&loop, &timer]()
+                         {
+            timer.stop();
+            loop.quit(); });
+        QObject::connect(&timer, &QTimer::timeout, &loop, [&]()
+                         {
+            timed_out = true;
+            reply->abort();
+            loop.quit(); });
+        timer.start(5000);
         loop.exec();
 
         QtApiResult result;
         result.http_status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (timed_out)
+        {
+            result.status = QStringLiteral("TransportError");
+            result.message = QStringLiteral("Request timed out");
+            result.ok = false;
+            reply->deleteLater();
+            return result;
+        }
 
         const QByteArray response_bytes = reply->readAll();
         QJsonParseError parse_error;

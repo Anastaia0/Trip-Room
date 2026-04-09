@@ -2,6 +2,7 @@
 
 #include <QJsonObject>
 #include <QNetworkAccessManager>
+#include <QNetworkRequest>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -164,13 +165,13 @@ namespace trip
         QtApiResult exportTripJson(const QString &token, const QString &trip_id);
         QtApiResult importTripJson(const QString &token, const QString &trip_json);
 
-        [[nodiscard]] QUrl updatesWebSocketUrl(
+        [[nodiscard]] QNetworkRequest updatesWebSocketRequest(
             const QString &token,
             const QString &trip_id,
             quint64 since_revision) const;
 
     private:
-        QtApiResult get(const QString &path, const QList<QPair<QString, QString>> &query_items = {});
+        QtApiResult get(const QString &path, const QList<QPair<QString, QString>> &query_items = {}, const QString &token = QString());
         QtApiResult postForm(const QString &path, const QList<QPair<QString, QString>> &form_items);
         QtApiResult runRequest(QNetworkRequest request, const QByteArray &body = QByteArray());
         [[nodiscard]] QUrl makeUrl(const QString &path) const;

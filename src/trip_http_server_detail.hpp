@@ -24,6 +24,7 @@ namespace trip::detail
 
     StringResponse jsonResponse(http::status code, std::string body, unsigned version, bool keep_alive);
     std::pair<std::string, std::unordered_map<std::string, std::string>> splitTarget(const std::string &target);
+    std::string authorizationBearerToken(const http::request<http::string_body> &req);
 
     uint64_t parseUint64(const std::string &text);
     double parseDouble(const std::string &text);

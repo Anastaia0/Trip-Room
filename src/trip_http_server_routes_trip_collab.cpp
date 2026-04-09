@@ -6,7 +6,20 @@ namespace trip::detail
     {
         if (path == "/trips/list" && ctx.req.method() == http::verb::get)
         {
-            const auto result = ctx.service.listTrips(ctx.param("token"));
+            if (ctx.query.contains("token") || ctx.body.contains("token"))
+            {
+                response = makeStatusResponse("InvalidArgument", "Use Authorization header instead of token parameter", ctx.req.version(), ctx.req.keep_alive());
+                return true;
+            }
+
+            const std::string token = authorizationBearerToken(ctx.req);
+            if (token.empty())
+            {
+                response = makeStatusResponse("Unauthorized", "Missing or invalid Authorization header", ctx.req.version(), ctx.req.keep_alive());
+                return true;
+            }
+
+            const auto result = ctx.service.listTrips(token);
             response = makeStatusOrResponse<std::vector<TripSummary>>(
                 result,
                 [](const std::vector<TripSummary> &trips)

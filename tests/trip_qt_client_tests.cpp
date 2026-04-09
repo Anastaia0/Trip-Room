@@ -289,7 +289,7 @@ TEST_F(QtTripClientFixture, ReceivesRealtimeUpdatesAndReconnectBacklog)
     QStringList live_messages;
     QObject::connect(&live_socket, &QWebSocket::textMessageReceived, [&](const QString &text)
                      { live_messages.push_back(text); });
-    live_socket.open(client_.updatesWebSocketUrl(owner.token, owner.trip_id, base_revision));
+    live_socket.open(client_.updatesWebSocketRequest(owner.token, owner.trip_id, base_revision));
     ASSERT_TRUE(waitForConnected(live_socket));
 
     const auto add_live = client_.addTask(owner.token, owner.trip_id, base_revision, QStringLiteral("Realtime task"));
@@ -332,7 +332,7 @@ TEST_F(QtTripClientFixture, ReceivesRealtimeUpdatesAndReconnectBacklog)
     QStringList backlog_messages;
     QObject::connect(&reconnect_socket, &QWebSocket::textMessageReceived, [&](const QString &text)
                      { backlog_messages.push_back(text); });
-    reconnect_socket.open(client_.updatesWebSocketUrl(owner.token, owner.trip_id, after_first));
+    reconnect_socket.open(client_.updatesWebSocketRequest(owner.token, owner.trip_id, after_first));
     ASSERT_TRUE(waitForConnected(reconnect_socket));
 
     const QString backlog_message = take_or_wait(reconnect_socket, backlog_messages);
