@@ -1,12 +1,40 @@
 {
-  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
-  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+  "C_Cpp.default.compilerPath": "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe",
+  "C_Cpp.default.intelliSenseMode": "windows-msvc-x64",
+  "C_Cpp.default.defines": [
+    "_WIN32_WINNT=0x0A00",
+    "UNICODE",
+    "_UNICODE",
+    "WIN32",
+    "_WINDOWS",
+    "QT_CORE_LIB",
+    "QT_GUI_LIB",
+    "QT_WIDGETS_LIB",
+    "QT_NETWORK_LIB",
+    "QT_WEBSOCKETS_LIB"
+  ],
   "C_Cpp.default.includePath": [
     "${workspaceFolder}/include",
     "${workspaceFolder}/src",
     "${workspaceFolder}/tests",
     "${workspaceFolder}/third_party/googletest/include",
+    "C:/tools/vcpkg/installed/x64-windows/include",
+    "C:/Qt/6.8.3/msvc2022_64/include",
+    "C:/Qt/6.8.3/msvc2022_64/include/QtCore",
+    "C:/Qt/6.8.3/msvc2022_64/include/QtGui",
+    "C:/Qt/6.8.3/msvc2022_64/include/QtWidgets",
+    "C:/Qt/6.8.3/msvc2022_64/include/QtNetwork",
+    "C:/Qt/6.8.3/msvc2022_64/include/QtWebSockets",
+    "C:/Qt/6.8.3/msvc2022_64/mkspecs/win32-msvc",
+    "C:/Qt/6.8.3/msvc2022_64/include/**",
     "${workspaceFolder}/**"
   ],
-  "cmake.configureOnOpen": true
+  "cmake.configureOnOpen": true,
+  "cmake.buildDirectory": "${workspaceFolder}/build-qt",
+  "cmake.configureSettings": {
+    "CMAKE_TOOLCHAIN_FILE": "C:/tools/vcpkg/scripts/buildsystems/vcpkg.cmake",
+    "VCPKG_MANIFEST_MODE": "OFF",
+    "CMAKE_PREFIX_PATH": "C:/Qt/6.8.3/msvc2022_64",
+    "FETCHCONTENT_SOURCE_DIR_GOOGLETEST": "${workspaceFolder}/build-vcpkg/_deps/googletest-src"
+  }
 }
