@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <initializer_list>
 #include <memory>
 #include <sstream>
@@ -24,6 +25,7 @@ namespace
     namespace http = beast::http;
     namespace websocket = beast::websocket;
     using tcp = asio::ip::tcp;
+    constexpr auto kTestIoTimeout = std::chrono::seconds(5);
 
     struct HttpResult
     {
@@ -109,6 +111,7 @@ namespace
         beast::tcp_stream stream(io);
 
         const auto endpoints = resolver.resolve("127.0.0.1", std::to_string(port));
+        stream.expires_after(kTestIoTimeout);
         stream.connect(endpoints);
 
         http::request<http::string_body> req{method, target, 11};
@@ -130,6 +133,7 @@ namespace
 
         beast::flat_buffer buffer;
         http::response<http::string_body> res;
+        stream.expires_after(kTestIoTimeout);
         http::read(stream, buffer, res);
 
         beast::error_code ec;
@@ -305,25 +309,31 @@ namespace
     {
         asio::io_context io;
         tcp::resolver resolver;
-        websocket::stream<tcp::socket> ws;
+        websocket::stream<beast::tcp_stream> ws;
 
         WsClient(uint16_t port, const std::string &target, const std::string &token)
             : resolver(io), ws(io)
         {
             const auto endpoints = resolver.resolve("127.0.0.1", std::to_string(port));
-            asio::connect(ws.next_layer(), endpoints);
+            beast::get_lowest_layer(ws).expires_after(kTestIoTimeout);
+            beast::get_lowest_layer(ws).connect(endpoints);
             ws.set_option(websocket::stream_base::decorator(
                 [token](websocket::request_type &req)
                 {
                     req.set(http::field::authorization, "Bearer " + token);
                 }));
+            beast::get_lowest_layer(ws).expires_after(kTestIoTimeout);
             ws.handshake("127.0.0.1", target);
+            beast::get_lowest_layer(ws).expires_never();
+            ws.set_option(websocket::stream_base::timeout::suggested(beast::role_type::client));
         }
 
         std::string readTextFrame()
         {
             beast::flat_buffer buffer;
+            beast::get_lowest_layer(ws).expires_after(kTestIoTimeout);
             ws.read(buffer);
+            beast::get_lowest_layer(ws).expires_never();
             return beast::buffers_to_string(buffer.data());
         }
 
