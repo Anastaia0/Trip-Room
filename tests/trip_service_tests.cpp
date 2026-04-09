@@ -110,6 +110,7 @@ TEST(TripServiceTests, ListsTripsVisibleToCurrentUserWithRoleAndCounters)
     ASSERT_TRUE(day.ok());
 
     rev = service.getTripRevision(auth.owner_token, trip.value);
+    ASSERT_TRUE(rev.ok());
     auto task = service.addTask(auth.owner_token, trip.value, rev.value, Task{"", "Pack bags"});
     ASSERT_TRUE(task.ok());
 

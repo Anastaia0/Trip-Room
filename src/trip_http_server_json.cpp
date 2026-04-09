@@ -151,8 +151,8 @@ namespace trip::detail
     std::string escapeJson(const std::string &text)
     {
         std::string out;
-        out.reserve(text.size() + 8);
-        for (char ch : text)
+        out.reserve(text.size() + 16);
+        for (unsigned char ch : text)
         {
             if (ch == '\\')
             {
@@ -166,9 +166,32 @@ namespace trip::detail
             {
                 out += "\\n";
             }
+            else if (ch == '\r')
+            {
+                out += "\\r";
+            }
+            else if (ch == '\t')
+            {
+                out += "\\t";
+            }
+            else if (ch == '\b')
+            {
+                out += "\\b";
+            }
+            else if (ch == '\f')
+            {
+                out += "\\f";
+            }
+            else if (ch < 0x20)
+            {
+                static constexpr char kHex[] = "0123456789abcdef";
+                out += "\\u00";
+                out.push_back(kHex[(ch >> 4) & 0x0F]);
+                out.push_back(kHex[ch & 0x0F]);
+            }
             else
             {
-                out.push_back(ch);
+                out.push_back(static_cast<char>(ch));
             }
         }
         return out;
