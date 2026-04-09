@@ -1844,8 +1844,18 @@ namespace
         {
             const QJsonObject root = doc.object();
             const QJsonObject event = root.value(QStringLiteral("event")).toObject();
-            const quint64 revision = event.value(QStringLiteral("revision")).toVariant().toULongLong();
-            if (revision > last_seen_revision_)
+            quint64 revision = 0;
+            bool has_revision = false;
+            const QJsonValue revision_value = event.value(QStringLiteral("revision"));
+            if (revision_value.isDouble())
+            {
+                revision = revision_value.toVariant().toULongLong(&has_revision);
+            }
+            else if (revision_value.isString())
+            {
+                revision = revision_value.toString().toULongLong(&has_revision);
+            }
+            if (has_revision && revision > last_seen_revision_)
             {
                 last_seen_revision_ = revision;
             }

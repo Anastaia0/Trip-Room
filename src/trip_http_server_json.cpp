@@ -1,9 +1,19 @@
 #include "trip_http_server_detail.hpp"
 
+#include <iomanip>
+#include <sstream>
+
 namespace trip::detail
 {
     namespace
     {
+        std::string formatMoney(double value)
+        {
+            std::ostringstream out;
+            out << std::fixed << std::setprecision(2) << value;
+            return out.str();
+        }
+
         std::string roleMapToJson(const std::unordered_map<std::string, Role> &members)
         {
             std::string body = "{";
@@ -110,7 +120,7 @@ namespace trip::detail
         std::string expenseToJson(const Expense &expense)
         {
             return "{\"id\":\"" + escapeJson(expense.id) +
-                   "\",\"amount\":" + std::to_string(expense.amount) +
+                   "\",\"amount\":" + formatMoney(expense.amount) +
                    ",\"category\":\"" + escapeJson(expense.category) +
                    "\",\"paid_by_user_id\":\"" + escapeJson(expense.paid_by_user_id) +
                    "\",\"comment\":\"" + escapeJson(expense.comment) +
@@ -300,7 +310,7 @@ namespace trip::detail
                 body += ",";
             }
             first = false;
-            body += "\"" + escapeJson(key) + "\":" + std::to_string(value);
+            body += "\"" + escapeJson(key) + "\":" + formatMoney(value);
         }
         body += "}";
         return body;
@@ -327,7 +337,7 @@ namespace trip::detail
 
     std::string budgetSummaryToJson(const BudgetSummary &summary)
     {
-        return "{\"total_expenses\":" + std::to_string(summary.total_expenses) +
+        return "{\"total_expenses\":" + formatMoney(summary.total_expenses) +
                ",\"by_category\":" + mapToJsonObject(summary.by_category) +
                ",\"paid_by_user\":" + mapToJsonObject(summary.paid_by_user) +
                ",\"balance_by_user\":" + mapToJsonObject(summary.balance_by_user) + "}";
@@ -341,7 +351,7 @@ namespace trip::detail
                ",\"days\":" + daysArrayToJson(trip.days) +
                ",\"tasks\":" + tasksArrayToJson(trip.tasks) +
                ",\"budget\":{\"currency\":\"" + escapeJson(trip.budget.currency) +
-               "\",\"total_limit\":" + std::to_string(trip.budget.total_limit) + "}" +
+               "\",\"total_limit\":" + formatMoney(trip.budget.total_limit) + "}" +
                ",\"expenses\":" + expensesArrayToJson(trip.expenses) +
                ",\"chat\":" + messagesArrayToJson(trip.chat) +
                ",\"events\":" + eventsArrayToJson(trip.events) +

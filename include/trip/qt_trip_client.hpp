@@ -172,7 +172,10 @@ namespace trip
 
     private:
         QtApiResult get(const QString &path, const QList<QPair<QString, QString>> &query_items = {}, const QString &token = QString());
-        QtApiResult postForm(const QString &path, const QList<QPair<QString, QString>> &form_items);
+        QtApiResult postForm(
+            const QString &path,
+            const QList<QPair<QString, QString>> &form_items,
+            const QString &token = QString());
         QtApiResult runRequest(QNetworkRequest request, const QByteArray &body = QByteArray());
         [[nodiscard]] QUrl makeUrl(const QString &path) const;
 

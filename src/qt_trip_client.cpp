@@ -82,18 +82,19 @@ namespace trip
         return postForm(
             QStringLiteral("/trips/create"),
             toPairs({
-                {"token", token},
                 {"title", title},
                 {"start_date", start_date},
                 {"end_date", end_date},
-                {"description", description}}));
+                {"description", description}}),
+            token);
     }
 
     QtApiResult QtTripClient::deleteTrip(const QString &token, const QString &trip_id)
     {
         return postForm(
             QStringLiteral("/trips/delete"),
-            toPairs({{"token", token}, {"trip_id", trip_id}}));
+            toPairs({{"trip_id", trip_id}}),
+            token);
     }
 
     QtApiResult QtTripClient::updateTripInfo(
@@ -108,27 +109,29 @@ namespace trip
         return postForm(
             QStringLiteral("/trips/update_info"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
                 {"title", title},
                 {"start_date", start_date},
                 {"end_date", end_date},
-                {"description", description}}));
+                {"description", description}}),
+            token);
     }
 
     QtApiResult QtTripClient::createInvite(const QString &token, const QString &trip_id, const QString &role)
     {
         return postForm(
             QStringLiteral("/invites/create"),
-            toPairs({{"token", token}, {"trip_id", trip_id}, {"role", role}}));
+            toPairs({{"trip_id", trip_id}, {"role", role}}),
+            token);
     }
 
     QtApiResult QtTripClient::acceptInvite(const QString &token, const QString &invite_code)
     {
         return postForm(
             QStringLiteral("/invites/accept"),
-            toPairs({{"token", token}, {"invite_code", invite_code}}));
+            toPairs({{"invite_code", invite_code}}),
+            token);
     }
 
     QtApiResult QtTripClient::changeMemberRole(
@@ -140,10 +143,10 @@ namespace trip
         return postForm(
             QStringLiteral("/members/change_role"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"target_user_id", target_user_id},
-                {"new_role", new_role}}));
+                {"new_role", new_role}}),
+            token);
     }
 
     QtApiResult QtTripClient::removeMember(const QString &token, const QString &trip_id, const QString &target_user_id)
@@ -151,9 +154,9 @@ namespace trip
         return postForm(
             QStringLiteral("/members/remove"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
-                {"target_user_id", target_user_id}}));
+                {"target_user_id", target_user_id}}),
+            token);
     }
 
     QtApiResult QtTripClient::getRevision(const QString &token, const QString &trip_id)
@@ -181,10 +184,10 @@ namespace trip
         return postForm(
             QStringLiteral("/days/add"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
-                {"day_name", day_name}}));
+                {"day_name", day_name}}),
+            token);
     }
 
     QtApiResult QtTripClient::renameDay(
@@ -197,11 +200,11 @@ namespace trip
         return postForm(
             QStringLiteral("/days/rename"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
                 {"day_id", day_id},
-                {"new_name", new_name}}));
+                {"new_name", new_name}}),
+            token);
     }
 
     QtApiResult QtTripClient::removeDay(
@@ -213,10 +216,10 @@ namespace trip
         return postForm(
             QStringLiteral("/days/remove"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
-                {"day_id", day_id}}));
+                {"day_id", day_id}}),
+            token);
     }
 
     QtApiResult QtTripClient::reorderDays(
@@ -228,10 +231,10 @@ namespace trip
         return postForm(
             QStringLiteral("/days/reorder"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
-                {"day_ids_order", joinCsv(day_ids_order)}}));
+                {"day_ids_order", joinCsv(day_ids_order)}}),
+            token);
     }
 
     QtApiResult QtTripClient::addPlanItem(
@@ -248,7 +251,6 @@ namespace trip
         return postForm(
             QStringLiteral("/plan/add"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"day_id", day_id},
                 {"expected_revision", QString::number(expected_revision)},
@@ -256,7 +258,8 @@ namespace trip
                 {"time", time},
                 {"notes", notes},
                 {"category", category},
-                {"link", link}}));
+                {"link", link}}),
+            token);
     }
 
     QtApiResult QtTripClient::updatePlanItem(
@@ -274,7 +277,6 @@ namespace trip
         return postForm(
             QStringLiteral("/plan/update"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"day_id", day_id},
                 {"expected_revision", QString::number(expected_revision)},
@@ -283,7 +285,8 @@ namespace trip
                 {"time", time},
                 {"notes", notes},
                 {"category", category},
-                {"link", link}}));
+                {"link", link}}),
+            token);
     }
 
     QtApiResult QtTripClient::removePlanItem(
@@ -296,11 +299,11 @@ namespace trip
         return postForm(
             QStringLiteral("/plan/remove"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"day_id", day_id},
                 {"expected_revision", QString::number(expected_revision)},
-                {"item_id", item_id}}));
+                {"item_id", item_id}}),
+            token);
     }
 
     QtApiResult QtTripClient::reorderPlanItems(
@@ -313,11 +316,11 @@ namespace trip
         return postForm(
             QStringLiteral("/plan/reorder"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"day_id", day_id},
                 {"expected_revision", QString::number(expected_revision)},
-                {"item_ids_order", joinCsv(item_ids_order)}}));
+                {"item_ids_order", joinCsv(item_ids_order)}}),
+            token);
     }
 
     QtApiResult QtTripClient::addTask(
@@ -331,12 +334,12 @@ namespace trip
         return postForm(
             QStringLiteral("/tasks/add"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
                 {"text", text},
                 {"assignee_user_id", assignee_user_id},
-                {"deadline", deadline}}));
+                {"deadline", deadline}}),
+            token);
     }
 
     QtApiResult QtTripClient::updateTask(
@@ -352,14 +355,14 @@ namespace trip
         return postForm(
             QStringLiteral("/tasks/update"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
                 {"task_id", task_id},
                 {"text", text},
                 {"done", done ? QStringLiteral("true") : QStringLiteral("false")},
                 {"assignee_user_id", assignee_user_id},
-                {"deadline", deadline}}));
+                {"deadline", deadline}}),
+            token);
     }
 
     QtApiResult QtTripClient::setTaskDone(
@@ -372,11 +375,11 @@ namespace trip
         return postForm(
             QStringLiteral("/tasks/set_done"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
                 {"task_id", task_id},
-                {"done", done ? QStringLiteral("true") : QStringLiteral("false")}}));
+                {"done", done ? QStringLiteral("true") : QStringLiteral("false")}}),
+            token);
     }
 
     QtApiResult QtTripClient::removeTask(
@@ -388,10 +391,10 @@ namespace trip
         return postForm(
             QStringLiteral("/tasks/remove"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
-                {"task_id", task_id}}));
+                {"task_id", task_id}}),
+            token);
     }
 
     QtApiResult QtTripClient::setBudgetSettings(
@@ -404,11 +407,11 @@ namespace trip
         return postForm(
             QStringLiteral("/budget/settings"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
                 {"currency", currency},
-                {"total_limit", QString::number(total_limit, 'f', 2)}}));
+                {"total_limit", QString::number(total_limit, 'f', 2)}}),
+            token);
     }
 
     QtApiResult QtTripClient::addExpense(
@@ -425,7 +428,6 @@ namespace trip
         return postForm(
             QStringLiteral("/budget/add_expense"),
             toPairs({
-                {"token", token},
                 {"trip_id", trip_id},
                 {"expected_revision", QString::number(expected_revision)},
                 {"amount", QString::number(amount, 'f', 2)},
@@ -433,7 +435,8 @@ namespace trip
                 {"paid_by_user_id", paid_by_user_id},
                 {"comment", comment},
                 {"date", date},
-                {"day_id", day_id}}));
+                {"day_id", day_id}}),
+            token);
     }
 
     QtApiResult QtTripClient::getBudgetSummary(const QString &token, const QString &trip_id)
@@ -445,7 +448,8 @@ namespace trip
     {
         return postForm(
             QStringLiteral("/chat/send"),
-            toPairs({{"token", token}, {"trip_id", trip_id}, {"text", text}}));
+            toPairs({{"trip_id", trip_id}, {"text", text}}),
+            token);
     }
 
     QtApiResult QtTripClient::listChatMessages(const QString &token, const QString &trip_id)
@@ -470,7 +474,8 @@ namespace trip
     {
         return postForm(
             QStringLiteral("/trips/import_json"),
-            toPairs({{"token", token}, {"trip_json", trip_json}}));
+            toPairs({{"trip_json", trip_json}}),
+            token);
     }
 
     QNetworkRequest QtTripClient::updatesWebSocketRequest(
@@ -515,7 +520,10 @@ namespace trip
         return runRequest(std::move(request));
     }
 
-    QtApiResult QtTripClient::postForm(const QString &path, const QList<QPair<QString, QString>> &form_items)
+    QtApiResult QtTripClient::postForm(
+        const QString &path,
+        const QList<QPair<QString, QString>> &form_items,
+        const QString &token)
     {
         QUrlQuery form;
         for (const auto &form_item : form_items)
@@ -528,6 +536,7 @@ namespace trip
         request.setHeader(
             QNetworkRequest::ContentTypeHeader,
             QStringLiteral("application/x-www-form-urlencoded"));
+        setBearerToken(request, token);
 
         return runRequest(std::move(request), form.toString(QUrl::FullyEncoded).toUtf8());
     }

@@ -97,7 +97,12 @@ namespace
         return out.str();
     }
 
-    HttpResult doHttpRequest(http::verb method, uint16_t port, const std::string &target, const std::string &body = {})
+    HttpResult doHttpRequest(
+        http::verb method,
+        uint16_t port,
+        const std::string &target,
+        const std::string &body = {},
+        const std::string &token = {})
     {
         asio::io_context io;
         tcp::resolver resolver(io);
@@ -109,6 +114,10 @@ namespace
         http::request<http::string_body> req{method, target, 11};
         req.set(http::field::host, "127.0.0.1");
         req.set(http::field::user_agent, "trip-tests");
+        if (!token.empty())
+        {
+            req.set(http::field::authorization, "Bearer " + token);
+        }
         req.keep_alive(false);
         if (method == http::verb::post)
         {
@@ -207,7 +216,7 @@ namespace
         }
 
         auto end = pos;
-        if (end < json.size() && json[end] == '-')
+        if (end < json.size() && (json[end] == '-' || json[end] == '+'))
         {
             ++end;
         }
@@ -221,6 +230,24 @@ namespace
             while (end < json.size() && json[end] >= '0' && json[end] <= '9')
             {
                 ++end;
+            }
+        }
+        if (end < json.size() && (json[end] == 'e' || json[end] == 'E'))
+        {
+            const auto exponent_start = end;
+            ++end;
+            if (end < json.size() && (json[end] == '+' || json[end] == '-'))
+            {
+                ++end;
+            }
+            const auto digits_start = end;
+            while (end < json.size() && json[end] >= '0' && json[end] <= '9')
+            {
+                ++end;
+            }
+            if (digits_start == end)
+            {
+                end = exponent_start;
             }
         }
         if (end == pos)
@@ -356,11 +383,11 @@ namespace
             http::verb::post,
             port,
             "/trips/create",
-            formBody({{"token", ctx.owner.token},
-                      {"title", trip_title},
+            formBody({{"title", trip_title},
                       {"start_date", "2026-08-01"},
                       {"end_date", "2026-08-02"},
-                      {"description", "http-tests"}}));
+                      {"description", "http-tests"}}),
+            ctx.owner.token);
         if (created_trip.status_code != 200U || apiStatus(created_trip) != "Ok")
         {
             return {};
@@ -386,10 +413,10 @@ namespace
             http::verb::post,
             port,
             "/tasks/add",
-            formBody({{"token", token},
-                      {"trip_id", trip_id},
+            formBody({{"trip_id", trip_id},
                       {"expected_revision", std::to_string(expected_revision)},
-                      {"text", text}}));
+                      {"text", text}}),
+            token);
     }
 
     HttpResult setTaskDoneRequest(
@@ -404,11 +431,11 @@ namespace
             http::verb::post,
             port,
             "/tasks/set_done",
-            formBody({{"token", token},
-                      {"trip_id", trip_id},
+            formBody({{"trip_id", trip_id},
                       {"expected_revision", std::to_string(expected_revision)},
                       {"task_id", task_id},
-                      {"done", done ? "true" : "false"}}));
+                      {"done", done ? "true" : "false"}}),
+            token);
     }
 
     HttpResult addDayRequest(
@@ -422,10 +449,10 @@ namespace
             http::verb::post,
             port,
             "/days/add",
-            formBody({{"token", token},
-                      {"trip_id", trip_id},
+            formBody({{"trip_id", trip_id},
                       {"expected_revision", std::to_string(expected_revision)},
-                      {"day_name", day_name}}));
+                      {"day_name", day_name}}),
+            token);
     }
 
     HttpResult renameDayRequest(
@@ -440,11 +467,11 @@ namespace
             http::verb::post,
             port,
             "/days/rename",
-            formBody({{"token", token},
-                      {"trip_id", trip_id},
+            formBody({{"trip_id", trip_id},
                       {"expected_revision", std::to_string(expected_revision)},
                       {"day_id", day_id},
-                      {"new_name", new_name}}));
+                      {"new_name", new_name}}),
+            token);
     }
 
     HttpResult addPlanItemRequest(
@@ -462,15 +489,15 @@ namespace
             http::verb::post,
             port,
             "/plan/add",
-            formBody({{"token", token},
-                      {"trip_id", trip_id},
+            formBody({{"trip_id", trip_id},
                       {"day_id", day_id},
                       {"expected_revision", std::to_string(expected_revision)},
                       {"name", name},
                       {"time", time},
                       {"notes", notes},
                       {"category", category},
-                      {"link", "https://example.test/" + name}}));
+                      {"link", "https://example.test/" + name}}),
+            token);
     }
 
     HttpResult setBudgetSettingsRequest(
@@ -485,11 +512,11 @@ namespace
             http::verb::post,
             port,
             "/budget/settings",
-            formBody({{"token", token},
-                      {"trip_id", trip_id},
+            formBody({{"trip_id", trip_id},
                       {"expected_revision", std::to_string(expected_revision)},
                       {"currency", currency},
-                      {"total_limit", std::to_string(total_limit)}}));
+                      {"total_limit", std::to_string(total_limit)}}),
+            token);
     }
 
     HttpResult addExpenseRequest(
@@ -507,15 +534,15 @@ namespace
             http::verb::post,
             port,
             "/budget/add_expense",
-            formBody({{"token", token},
-                      {"trip_id", trip_id},
+            formBody({{"trip_id", trip_id},
                       {"expected_revision", std::to_string(expected_revision)},
                       {"amount", std::to_string(amount)},
                       {"category", category},
                       {"paid_by_user_id", paid_by_user_id},
                       {"comment", comment},
                       {"date", date},
-                      {"day_id", ""}}));
+                      {"day_id", ""}}),
+            token);
     }
 
     HttpResult searchTripRequest(
@@ -527,9 +554,10 @@ namespace
         return doHttpRequest(
             http::verb::get,
             port,
-            "/search?token=" + urlEncode(token) +
-                "&trip_id=" + urlEncode(trip_id) +
-                "&query=" + urlEncode(query));
+            "/search?trip_id=" + urlEncode(trip_id) +
+                "&query=" + urlEncode(query),
+            {},
+            token);
     }
 
     HttpResult getEventsSinceRequest(
@@ -541,9 +569,10 @@ namespace
         return doHttpRequest(
             http::verb::get,
             port,
-            "/events/since?token=" + urlEncode(token) +
-                "&trip_id=" + urlEncode(trip_id) +
-                "&since_revision=" + std::to_string(since_revision));
+            "/events/since?trip_id=" + urlEncode(trip_id) +
+                "&since_revision=" + std::to_string(since_revision),
+            {},
+            token);
     }
 
     HttpResult getSnapshotRequest(uint16_t port, const std::string &token, const std::string &trip_id)
@@ -551,8 +580,9 @@ namespace
         return doHttpRequest(
             http::verb::get,
             port,
-            "/trips/snapshot?token=" + urlEncode(token) +
-                "&trip_id=" + urlEncode(trip_id));
+            "/trips/snapshot?trip_id=" + urlEncode(trip_id),
+            {},
+            token);
     }
 
     HttpResult exportTripJsonRequest(uint16_t port, const std::string &token, const std::string &trip_id)
@@ -560,8 +590,9 @@ namespace
         return doHttpRequest(
             http::verb::get,
             port,
-            "/trips/export_json?token=" + urlEncode(token) +
-                "&trip_id=" + urlEncode(trip_id));
+            "/trips/export_json?trip_id=" + urlEncode(trip_id),
+            {},
+            token);
     }
 
     HttpResult getBudgetSummaryRequest(uint16_t port, const std::string &token, const std::string &trip_id)
@@ -569,8 +600,9 @@ namespace
         return doHttpRequest(
             http::verb::get,
             port,
-            "/budget/summary?token=" + urlEncode(token) +
-                "&trip_id=" + urlEncode(trip_id));
+            "/budget/summary?trip_id=" + urlEncode(trip_id),
+            {},
+            token);
     }
 
     uint64_t fetchRevision(const std::string &token, const std::string &trip_id, uint16_t port)
@@ -578,7 +610,9 @@ namespace
         const auto rev = doHttpRequest(
             http::verb::get,
             port,
-            "/trips/revision?token=" + urlEncode(token) + "&trip_id=" + urlEncode(trip_id));
+            "/trips/revision?trip_id=" + urlEncode(trip_id),
+            {},
+            token);
         if (rev.status_code != 200U || apiStatus(rev) != "Ok")
         {
             return 0;
