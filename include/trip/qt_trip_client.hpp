@@ -1,9 +1,12 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QList>
 #include <QNetworkRequest>
+#include <QPair>
 #include <QString>
 #include <QStringList>
+#include <QtGlobal>
 #include <QUrl>
 
 namespace trip
