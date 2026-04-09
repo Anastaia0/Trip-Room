@@ -1,7 +1,6 @@
 #pragma once
 
 #include <QJsonObject>
-#include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QString>
 #include <QStringList>
@@ -180,6 +179,5 @@ namespace trip
         [[nodiscard]] QUrl makeUrl(const QString &path) const;
 
         QString base_url_;
-        QNetworkAccessManager network_;
     };
 }

@@ -3,7 +3,11 @@
 #include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QMetaObject>
+#include <QObject>
+#include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QThread>
 #include <QTimer>
 #include <QUrlQuery>
 
@@ -34,6 +38,65 @@ namespace trip
             {
                 request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
             }
+        }
+
+        QtApiResult executeBlockingRequest(
+            QNetworkAccessManager &network,
+            QNetworkRequest request,
+            const QByteArray &body)
+        {
+            QNetworkReply *reply = body.isEmpty() ? network.get(request) : network.post(request, body);
+
+            QEventLoop loop;
+            QTimer timer;
+            bool timed_out = false;
+            timer.setSingleShot(true);
+
+            QObject::connect(reply, &QNetworkReply::finished, &loop, [&loop, &timer]()
+                             {
+                timer.stop();
+                loop.quit(); });
+            QObject::connect(&timer, &QTimer::timeout, &loop, [&]()
+                             {
+                timed_out = true;
+                reply->abort();
+                loop.quit(); });
+            timer.start(5000);
+            loop.exec();
+
+            QtApiResult result;
+            result.http_status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (timed_out)
+            {
+                result.status = QStringLiteral("TransportError");
+                result.message = QStringLiteral("Request timed out");
+                result.ok = false;
+                reply->deleteLater();
+                return result;
+            }
+
+            const QByteArray response_bytes = reply->readAll();
+            QJsonParseError parse_error;
+            const QJsonDocument doc = QJsonDocument::fromJson(response_bytes, &parse_error);
+
+            if (parse_error.error != QJsonParseError::NoError || !doc.isObject())
+            {
+                result.status = QStringLiteral("TransportError");
+                result.message = reply->errorString().isEmpty()
+                                     ? QString::fromUtf8(response_bytes)
+                                     : reply->errorString();
+                result.ok = false;
+                reply->deleteLater();
+                return result;
+            }
+
+            result.payload = doc.object();
+            result.status = result.payload.value(QStringLiteral("status")).toString();
+            result.message = result.payload.value(QStringLiteral("message")).toString();
+            result.ok = (result.status == QStringLiteral("Ok"));
+
+            reply->deleteLater();
+            return result;
         }
     }
 
@@ -543,57 +606,23 @@ namespace trip
 
     QtApiResult QtTripClient::runRequest(QNetworkRequest request, const QByteArray &body)
     {
-        QNetworkReply *reply = body.isEmpty() ? network_.get(request) : network_.post(request, body);
-
-        QEventLoop loop;
-        QTimer timer;
-        bool timed_out = false;
-        timer.setSingleShot(true);
-
-        QObject::connect(reply, &QNetworkReply::finished, &loop, [&loop, &timer]()
-                         {
-            timer.stop();
-            loop.quit(); });
-        QObject::connect(&timer, &QTimer::timeout, &loop, [&]()
-                         {
-            timed_out = true;
-            reply->abort();
-            loop.quit(); });
-        timer.start(5000);
-        loop.exec();
-
         QtApiResult result;
-        result.http_status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (timed_out)
-        {
-            result.status = QStringLiteral("TransportError");
-            result.message = QStringLiteral("Request timed out");
-            result.ok = false;
-            reply->deleteLater();
-            return result;
-        }
+        QThread worker_thread;
+        QObject worker_context;
+        worker_context.moveToThread(&worker_thread);
+        worker_thread.start();
 
-        const QByteArray response_bytes = reply->readAll();
-        QJsonParseError parse_error;
-        const QJsonDocument doc = QJsonDocument::fromJson(response_bytes, &parse_error);
+        QMetaObject::invokeMethod(
+            &worker_context,
+            [&result, request, body]()
+            {
+                QNetworkAccessManager network;
+                result = executeBlockingRequest(network, request, body);
+            },
+            Qt::BlockingQueuedConnection);
 
-        if (parse_error.error != QJsonParseError::NoError || !doc.isObject())
-        {
-            result.status = QStringLiteral("TransportError");
-            result.message = reply->errorString().isEmpty()
-                                 ? QString::fromUtf8(response_bytes)
-                                 : reply->errorString();
-            result.ok = false;
-            reply->deleteLater();
-            return result;
-        }
-
-        result.payload = doc.object();
-        result.status = result.payload.value(QStringLiteral("status")).toString();
-        result.message = result.payload.value(QStringLiteral("message")).toString();
-        result.ok = (result.status == QStringLiteral("Ok"));
-
-        reply->deleteLater();
+        worker_thread.quit();
+        worker_thread.wait();
         return result;
     }
 

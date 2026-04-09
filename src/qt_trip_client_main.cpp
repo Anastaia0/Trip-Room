@@ -658,7 +658,7 @@ namespace
             if (result.ok)
             {
                 token_ = result.payload.value(QStringLiteral("token")).toString();
-                session_label_->setText(QStringLiteral("User: ") + login_edit_->text() + QStringLiteral(" | token: ") + token_.left(16));
+                session_label_->setText(QStringLiteral("User: ") + login_edit_->text());
                 refreshTripsList(false);
             } });
 
