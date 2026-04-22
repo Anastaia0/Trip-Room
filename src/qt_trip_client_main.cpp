@@ -327,6 +327,8 @@ namespace
             tasks_table_->horizontalHeader()->setStretchLastSection(true);
             tasks_table_->verticalHeader()->setVisible(false);
             tasks_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+            tasks_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+            tasks_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
             task_text_edit_ = new QLineEdit();
             task_assignee_combo_ = new QComboBox();
@@ -486,6 +488,8 @@ namespace
         void populateEventsTable(const QJsonArray &events);
         void populateSearchResults(const QJsonArray &hits);
         void populateRawJson(const QString &json_text);
+        void selectTask(const QString &task_id);
+        void clearTaskEditor();
         QString selectedTripId() const;
         QString selectedMemberId() const;
         QString selectedDayId() const;
@@ -1319,6 +1323,12 @@ namespace
         connect(tasks_table_, &QTableWidget::itemSelectionChanged, this, [this]()
                 {
             const QString task_id = selectedTaskId();
+            if (task_id.isEmpty())
+            {
+                clearTaskEditor();
+                return;
+            }
+            bool found = false;
             for (const auto &value : current_trip_.value(QStringLiteral("tasks")).toArray())
             {
                 const QJsonObject task = value.toObject();
@@ -1335,7 +1345,12 @@ namespace
                 {
                     task_assignee_combo_->setCurrentIndex(combo_index);
                 }
+                found = true;
                 break;
+            }
+            if (!found)
+            {
+                clearTaskEditor();
             } });
 
         connect(members_table_, &QTableWidget::itemSelectionChanged, this, [this]()
@@ -1455,9 +1470,11 @@ namespace
             budget_summary_text_->clear();
             raw_json_text_->clear();
             current_trip_ = {};
+            clearTaskEditor();
             return;
         }
 
+        const QString previously_selected_task = selectedTaskId();
         const auto result = client_.getSnapshot(token_, current_trip_id_);
         if (!result.ok)
         {
@@ -1493,6 +1510,21 @@ namespace
         }
         populatePlanTable(selectedDayObject());
         populateTasksTable(current_trip_.value(QStringLiteral("tasks")).toArray());
+        if (tasks_table_->rowCount() > 0)
+        {
+            if (!previously_selected_task.isEmpty())
+            {
+                selectTask(previously_selected_task);
+            }
+            if (tasks_table_->currentRow() < 0)
+            {
+                tasks_table_->selectRow(0);
+            }
+        }
+        else
+        {
+            clearTaskEditor();
+        }
         populateExpensesTable(current_trip_.value(QStringLiteral("expenses")).toArray());
         populateChatTable(current_trip_.value(QStringLiteral("chat")).toArray());
         populateEventsTable(current_trip_.value(QStringLiteral("events")).toArray());
@@ -1632,6 +1664,45 @@ namespace
             tasks_table_->setItem(row, 1, new QTableWidgetItem(task.value(QStringLiteral("done")).toBool() ? QStringLiteral("true") : QStringLiteral("false")));
             tasks_table_->setItem(row, 2, new QTableWidgetItem(task.value(QStringLiteral("assignee_user_id")).toString()));
             tasks_table_->setItem(row, 3, new QTableWidgetItem(task.value(QStringLiteral("deadline")).toString()));
+        }
+    }
+
+    void TripClientWindow::selectTask(const QString &task_id)
+    {
+        if (task_id.isEmpty())
+        {
+            tasks_table_->clearSelection();
+            tasks_table_->setCurrentItem(nullptr);
+            return;
+        }
+
+        for (int row = 0; row < tasks_table_->rowCount(); ++row)
+        {
+            auto *item = tasks_table_->item(row, 0);
+            if (item != nullptr && item->data(Qt::UserRole).toString() == task_id)
+            {
+                tasks_table_->setCurrentCell(row, 0);
+                tasks_table_->selectRow(row);
+                return;
+            }
+        }
+
+        tasks_table_->clearSelection();
+        tasks_table_->setCurrentItem(nullptr);
+    }
+
+    void TripClientWindow::clearTaskEditor()
+    {
+        task_text_edit_->clear();
+        task_deadline_edit_->clear();
+        task_done_check_->setChecked(false);
+        if (task_assignee_combo_->count() > 0)
+        {
+            task_assignee_combo_->setCurrentIndex(0);
+        }
+        else
+        {
+            task_assignee_combo_->setCurrentIndex(-1);
         }
     }
 

@@ -284,6 +284,63 @@ TEST_F(QtTripClientFixture, SupportsInviteBudgetChatSearchAndExportImportFlows)
     ASSERT_TRUE(remove_member.ok);
 }
 
+TEST_F(QtTripClientFixture, SupportsTaskUpdateToggleAndRemoveFlows)
+{
+    const SessionTrip owner = createOwnerTrip(QStringLiteral("qt_task_owner"), QStringLiteral("Qt Task Flow"));
+
+    quint64 revision = currentRevision(owner.token, owner.trip_id);
+    const auto add_task = client().addTask(
+        owner.token,
+        owner.trip_id,
+        revision,
+        QStringLiteral("Initial task"),
+        owner.user_id,
+        QStringLiteral("2026-09-02"));
+    ASSERT_TRUE(add_task.ok);
+    const QString task_id = add_task.payload.value(QStringLiteral("task_id")).toString();
+    ASSERT_FALSE(task_id.isEmpty());
+
+    revision = currentRevision(owner.token, owner.trip_id);
+    const auto update_task = client().updateTask(
+        owner.token,
+        owner.trip_id,
+        revision,
+        task_id,
+        QStringLiteral("Updated task"),
+        true,
+        owner.user_id,
+        QStringLiteral("2026-09-03"));
+    ASSERT_TRUE(update_task.ok);
+
+    auto snapshot = client().getSnapshot(owner.token, owner.trip_id);
+    ASSERT_TRUE(snapshot.ok);
+    const QJsonArray tasks_after_update = snapshot.payload.value(QStringLiteral("trip")).toObject().value(QStringLiteral("tasks")).toArray();
+    ASSERT_EQ(tasks_after_update.size(), 1);
+    EXPECT_EQ(tasks_after_update[0].toObject().value(QStringLiteral("id")).toString(), task_id);
+    EXPECT_EQ(tasks_after_update[0].toObject().value(QStringLiteral("text")).toString(), QStringLiteral("Updated task"));
+    EXPECT_TRUE(tasks_after_update[0].toObject().value(QStringLiteral("done")).toBool());
+    EXPECT_EQ(tasks_after_update[0].toObject().value(QStringLiteral("deadline")).toString(), QStringLiteral("2026-09-03"));
+
+    revision = currentRevision(owner.token, owner.trip_id);
+    const auto set_done = client().setTaskDone(owner.token, owner.trip_id, revision, task_id, false);
+    ASSERT_TRUE(set_done.ok);
+
+    snapshot = client().getSnapshot(owner.token, owner.trip_id);
+    ASSERT_TRUE(snapshot.ok);
+    const QJsonArray tasks_after_toggle = snapshot.payload.value(QStringLiteral("trip")).toObject().value(QStringLiteral("tasks")).toArray();
+    ASSERT_EQ(tasks_after_toggle.size(), 1);
+    EXPECT_FALSE(tasks_after_toggle[0].toObject().value(QStringLiteral("done")).toBool());
+
+    revision = currentRevision(owner.token, owner.trip_id);
+    const auto remove_task = client().removeTask(owner.token, owner.trip_id, revision, task_id);
+    ASSERT_TRUE(remove_task.ok);
+
+    snapshot = client().getSnapshot(owner.token, owner.trip_id);
+    ASSERT_TRUE(snapshot.ok);
+    EXPECT_EQ(snapshot.payload.value(QStringLiteral("tasks_count")).toInt(), 0);
+    EXPECT_TRUE(snapshot.payload.value(QStringLiteral("trip")).toObject().value(QStringLiteral("tasks")).toArray().isEmpty());
+}
+
 TEST_F(QtTripClientFixture, ReceivesRealtimeUpdatesAndReconnectBacklog)
 {
     const SessionTrip owner = createOwnerTrip(QStringLiteral("qt_ws_owner"), QStringLiteral("Qt WS"));
