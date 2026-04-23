@@ -25,18 +25,24 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QMetaObject>
+#include <QObject>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QSettings>
 #include <QSplitter>
+#include <QStyle>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextEdit>
+#include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <functional>
 #include <utility>
 
 namespace
@@ -50,18 +56,37 @@ namespace
     {
     public:
         explicit TripClientWindow(QString server_url = {})
-            : client_(server_url.isEmpty() ? defaultServerUrl() : std::move(server_url))
+            : client_(server_url.isEmpty() ? defaultServerUrl() : std::move(server_url)),
+              network_client_(client_.baseUrl())
         {
+            network_thread_.setObjectName(QStringLiteral("trip-network-thread"));
+            network_context_.moveToThread(&network_thread_);
+            network_thread_.start();
+
             buildUi();
+            applyUiPolish();
+            createNetworkSocket();
             wireUi();
             reconnect_timer_.setInterval(2000);
             reconnect_timer_.setSingleShot(true);
             reload_debounce_timer_.setInterval(100);
             reload_debounce_timer_.setSingleShot(true);
             appendLog(QStringLiteral("Qt client is ready"));
+            appendLog(QStringLiteral("UI/render thread is active; HTTP and live sync use one dedicated connection thread"));
+        }
+
+        ~TripClientWindow() override
+        {
+            destroyNetworkSocket();
+            network_thread_.quit();
+            network_thread_.wait();
         }
 
     private:
+        using ApiTask = std::function<trip::QtApiResult(trip::QtTripClient &)>;
+        using ApiHandler = std::function<void(const trip::QtApiResult &)>;
+        using LoadHandler = std::function<void()>;
+
         void buildUi()
         {
             setWindowTitle(QStringLiteral("Trip Planner Qt Client"));
@@ -87,6 +112,8 @@ namespace
             login_button_ = new QPushButton(QStringLiteral("Login"));
             session_label_ = new QLabel(QStringLiteral("User: <not logged in>"));
             socket_label_ = new QLabel(QStringLiteral("Live sync: disconnected"));
+            network_label_ = new QLabel(QStringLiteral("Network: idle"));
+            network_label_->setObjectName(QStringLiteral("networkStatus"));
 
             auto *auth_buttons = new QWidget();
             auto *auth_buttons_layout = new QHBoxLayout(auth_buttons);
@@ -100,6 +127,7 @@ namespace
             server_layout->addRow(QString(), health_button_);
             server_layout->addRow(QString(), auth_buttons);
             server_layout->addRow(QString(), session_label_);
+            server_layout->addRow(QString(), network_label_);
             server_layout->addRow(QString(), socket_label_);
 
             auto *trips_group = new QGroupBox(QStringLiteral("Trips"));
@@ -468,14 +496,19 @@ namespace
         }
 
         void wireUi();
+        void createNetworkSocket();
+        void destroyNetworkSocket();
+        void applyUiPolish();
         void appendLog(const QString &line);
         void appendResult(const QString &prefix, const trip::QtApiResult &result);
+        void runNetworkOperation(const QString &prefix, ApiTask task, ApiHandler on_success = {}, ApiHandler on_failure = {});
+        void runNetworkMutation(const QString &prefix, std::function<trip::QtApiResult(trip::QtTripClient &, quint64)> task, ApiHandler on_success = {});
+        void setNetworkBusy(bool busy, const QString &operation = {});
         bool hasSession() const;
         bool hasCurrentTrip() const;
-        quint64 fetchRevision();
-        void refreshTripsList(bool keep_selection = true);
+        void refreshTripsList(bool keep_selection = true, LoadHandler on_loaded = {});
         void selectTrip(const QString &trip_id);
-        void loadCurrentTrip();
+        void loadCurrentTrip(LoadHandler on_loaded = {});
         void refreshBudgetSummary();
         void refreshMemberEditors();
         void populateTripsList(const QJsonArray &trips);
@@ -504,10 +537,15 @@ namespace
         void handleSocketMessage(const QString &payload);
 
         trip::QtTripClient client_;
-        QWebSocket socket_;
+        trip::QtTripClient network_client_;
+        QObject network_context_;
+        QThread network_thread_;
+        QWebSocket *socket_ = nullptr;
         QTimer reconnect_timer_;
         QTimer reload_debounce_timer_;
+        int pending_network_jobs_ = 0;
         bool live_sync_requested_ = false;
+        bool live_socket_active_ = false;
         bool manual_socket_close_ = false;
         quint64 current_revision_ = 0;
         quint64 last_seen_revision_ = 0;
@@ -524,6 +562,7 @@ namespace
         QPushButton *register_button_ = nullptr;
         QPushButton *login_button_ = nullptr;
         QLabel *session_label_ = nullptr;
+        QLabel *network_label_ = nullptr;
         QLabel *socket_label_ = nullptr;
         QPushButton *refresh_trips_button_ = nullptr;
         QListWidget *trips_list_ = nullptr;
@@ -615,56 +654,55 @@ namespace
                 loadCurrentTrip();
             } });
 
-        connect(&socket_, &QWebSocket::connected, this, [this]()
-                {
-            socket_label_->setText(QStringLiteral("Live sync: connected"));
-            appendLog(QStringLiteral("Live sync connected")); });
-
-        connect(&socket_, &QWebSocket::disconnected, this, [this]()
-                {
-            socket_label_->setText(QStringLiteral("Live sync: disconnected"));
-            appendLog(QStringLiteral("Live sync disconnected"));
-            const bool should_reconnect = live_sync_requested_ && !manual_socket_close_;
-            manual_socket_close_ = false;
-            if (should_reconnect)
-            {
-                scheduleReconnect();
-            } });
-
-        connect(&socket_, &QWebSocket::textMessageReceived, this, [this](const QString &payload)
-                { handleSocketMessage(payload); });
-
         connect(base_url_edit_, &QLineEdit::textChanged, this, [this](const QString &value)
                 {
             client_.setBaseUrl(value);
             QSettings().setValue(QStringLiteral("server_url"), value);
-            if (socket_.state() == QAbstractSocket::ConnectedState)
+            if (live_sync_requested_)
             {
                 connectLiveUpdates();
             } });
 
         connect(health_button_, &QPushButton::clicked, this, [this]()
-                { appendResult(QStringLiteral("Health"), client_.health()); });
+                {
+            runNetworkOperation(
+                QStringLiteral("Health"),
+                [](trip::QtTripClient &client)
+                {
+                    return client.health();
+                }); });
 
         connect(register_button_, &QPushButton::clicked, this, [this]()
                 {
-            const auto result = client_.registerUser(login_edit_->text(), password_edit_->text());
-            appendResult(QStringLiteral("Register"), result);
-            if (result.ok)
-            {
-                current_user_id_ = result.payload.value(QStringLiteral("user_id")).toString();
-            } });
+            const QString login = login_edit_->text();
+            const QString password = password_edit_->text();
+            runNetworkOperation(
+                QStringLiteral("Register"),
+                [login, password](trip::QtTripClient &client)
+                {
+                    return client.registerUser(login, password);
+                },
+                [this](const trip::QtApiResult &result)
+                {
+                    current_user_id_ = result.payload.value(QStringLiteral("user_id")).toString();
+                }); });
 
         connect(login_button_, &QPushButton::clicked, this, [this]()
                 {
-            const auto result = client_.login(login_edit_->text(), password_edit_->text());
-            appendResult(QStringLiteral("Login"), result);
-            if (result.ok)
-            {
-                token_ = result.payload.value(QStringLiteral("token")).toString();
-                session_label_->setText(QStringLiteral("User: ") + login_edit_->text());
-                refreshTripsList(false);
-            } });
+            const QString login = login_edit_->text();
+            const QString password = password_edit_->text();
+            runNetworkOperation(
+                QStringLiteral("Login"),
+                [login, password](trip::QtTripClient &client)
+                {
+                    return client.login(login, password);
+                },
+                [this, login](const trip::QtApiResult &result)
+                {
+                    token_ = result.payload.value(QStringLiteral("token")).toString();
+                    session_label_->setText(QStringLiteral("User: ") + login);
+                    refreshTripsList(false);
+                }); });
 
         connect(refresh_trips_button_, &QPushButton::clicked, this, [this]()
                 { refreshTripsList(true); });
@@ -672,11 +710,13 @@ namespace
         connect(connect_trip_button_, &QPushButton::clicked, this, [this]()
                 {
             current_trip_id_ = selectedTripId();
-            loadCurrentTrip();
-            if (live_sync_requested_)
-            {
-                connectLiveUpdates();
-            } });
+            loadCurrentTrip([this]()
+                            {
+                if (live_sync_requested_)
+                {
+                    connectLiveUpdates();
+                } });
+            });
 
         connect(trips_list_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item)
                 {
@@ -685,11 +725,13 @@ namespace
                 return;
             }
             current_trip_id_ = item->data(Qt::UserRole).toString();
-            loadCurrentTrip();
-            if (live_sync_requested_)
-            {
-                connectLiveUpdates();
-            } });
+            loadCurrentTrip([this]()
+                            {
+                if (live_sync_requested_)
+                {
+                    connectLiveUpdates();
+                } });
+            });
 
         connect(create_trip_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -698,24 +740,31 @@ namespace
                 appendLog(QStringLiteral("Login first"));
                 return;
             }
-            const auto result = client_.createTrip(
-                token_,
-                title_edit_->text(),
-                start_date_edit_->date().toString(QStringLiteral("yyyy-MM-dd")),
-                end_date_edit_->date().toString(QStringLiteral("yyyy-MM-dd")),
-                description_edit_->toPlainText());
-            appendResult(QStringLiteral("Create Trip"), result);
-            if (result.ok)
-            {
-                current_trip_id_ = result.payload.value(QStringLiteral("trip_id")).toString();
-                refreshTripsList(false);
-                selectTrip(current_trip_id_);
-                loadCurrentTrip();
-                if (live_sync_requested_)
+            const QString token = token_;
+            const QString title = title_edit_->text();
+            const QString start_date = start_date_edit_->date().toString(QStringLiteral("yyyy-MM-dd"));
+            const QString end_date = end_date_edit_->date().toString(QStringLiteral("yyyy-MM-dd"));
+            const QString description = description_edit_->toPlainText();
+            runNetworkOperation(
+                QStringLiteral("Create Trip"),
+                [token, title, start_date, end_date, description](trip::QtTripClient &client)
                 {
-                    connectLiveUpdates();
-                }
-            } });
+                    return client.createTrip(token, title, start_date, end_date, description);
+                },
+                [this](const trip::QtApiResult &result)
+                {
+                    current_trip_id_ = result.payload.value(QStringLiteral("trip_id")).toString();
+                    refreshTripsList(false, [this]()
+                                     {
+                        selectTrip(current_trip_id_);
+                        loadCurrentTrip([this]()
+                                        {
+                            if (live_sync_requested_)
+                            {
+                                connectLiveUpdates();
+                            } });
+                        });
+                }); });
 
         connect(update_trip_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -724,25 +773,23 @@ namespace
                 appendLog(QStringLiteral("Select a trip first"));
                 return;
             }
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.updateTripInfo(
-                token_,
-                current_trip_id_,
-                revision,
-                title_edit_->text(),
-                start_date_edit_->date().toString(QStringLiteral("yyyy-MM-dd")),
-                end_date_edit_->date().toString(QStringLiteral("yyyy-MM-dd")),
-                description_edit_->toPlainText());
-            appendResult(QStringLiteral("Update Trip"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-                refreshTripsList(true);
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString title = title_edit_->text();
+            const QString start_date = start_date_edit_->date().toString(QStringLiteral("yyyy-MM-dd"));
+            const QString end_date = end_date_edit_->date().toString(QStringLiteral("yyyy-MM-dd"));
+            const QString description = description_edit_->toPlainText();
+            runNetworkMutation(
+                QStringLiteral("Update Trip"),
+                [token, trip_id, title, start_date, end_date, description](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.updateTripInfo(token, trip_id, revision, title, start_date, end_date, description);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                    refreshTripsList(true);
+                }); });
 
         connect(delete_trip_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -751,18 +798,24 @@ namespace
                 appendLog(QStringLiteral("Select a trip first"));
                 return;
             }
-            const auto result = client_.deleteTrip(token_, current_trip_id_);
-            appendResult(QStringLiteral("Delete Trip"), result);
-            if (result.ok)
-            {
-                disconnectLiveUpdates(true);
-                current_trip_id_.clear();
-                current_trip_ = {};
-                current_revision_ = 0;
-                last_seen_revision_ = 0;
-                refreshTripsList(false);
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            runNetworkOperation(
+                QStringLiteral("Delete Trip"),
+                [token, trip_id](trip::QtTripClient &client)
+                {
+                    return client.deleteTrip(token, trip_id);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    disconnectLiveUpdates(true);
+                    current_trip_id_.clear();
+                    current_trip_ = {};
+                    current_revision_ = 0;
+                    last_seen_revision_ = 0;
+                    refreshTripsList(false);
+                    loadCurrentTrip();
+                }); });
 
         connect(refresh_trip_button_, &QPushButton::clicked, this, [this]()
                 { loadCurrentTrip(); });
@@ -774,12 +827,19 @@ namespace
                 appendLog(QStringLiteral("Select a trip first"));
                 return;
             }
-            const auto result = client_.createInvite(token_, current_trip_id_, invite_role_combo_->currentText());
-            appendResult(QStringLiteral("Create Invite"), result);
-            if (result.ok)
-            {
-                invite_output_edit_->setText(result.payload.value(QStringLiteral("invite_code")).toString());
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString role = invite_role_combo_->currentText();
+            runNetworkOperation(
+                QStringLiteral("Create Invite"),
+                [token, trip_id, role](trip::QtTripClient &client)
+                {
+                    return client.createInvite(token, trip_id, role);
+                },
+                [this](const trip::QtApiResult &result)
+                {
+                    invite_output_edit_->setText(result.payload.value(QStringLiteral("invite_code")).toString());
+                }); });
 
         connect(accept_invite_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -788,12 +848,18 @@ namespace
                 appendLog(QStringLiteral("Login first"));
                 return;
             }
-            const auto result = client_.acceptInvite(token_, invite_code_edit_->text());
-            appendResult(QStringLiteral("Accept Invite"), result);
-            if (result.ok)
-            {
-                refreshTripsList(false);
-            } });
+            const QString token = token_;
+            const QString invite_code = invite_code_edit_->text();
+            runNetworkOperation(
+                QStringLiteral("Accept Invite"),
+                [token, invite_code](trip::QtTripClient &client)
+                {
+                    return client.acceptInvite(token, invite_code);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    refreshTripsList(false);
+                }); });
 
         connect(change_member_role_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -803,12 +869,19 @@ namespace
                 appendLog(QStringLiteral("Select a member first"));
                 return;
             }
-            const auto result = client_.changeMemberRole(token_, current_trip_id_, member_id, member_role_combo_->currentText());
-            appendResult(QStringLiteral("Change Role"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString role = member_role_combo_->currentText();
+            runNetworkOperation(
+                QStringLiteral("Change Role"),
+                [token, trip_id, member_id, role](trip::QtTripClient &client)
+                {
+                    return client.changeMemberRole(token, trip_id, member_id, role);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(remove_member_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -818,26 +891,34 @@ namespace
                 appendLog(QStringLiteral("Select a member first"));
                 return;
             }
-            const auto result = client_.removeMember(token_, current_trip_id_, member_id);
-            appendResult(QStringLiteral("Remove Member"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            runNetworkOperation(
+                QStringLiteral("Remove Member"),
+                [token, trip_id, member_id](trip::QtTripClient &client)
+                {
+                    return client.removeMember(token, trip_id, member_id);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(add_day_button_, &QPushButton::clicked, this, [this]()
                 {
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.addDay(token_, current_trip_id_, revision, day_name_edit_->text());
-            appendResult(QStringLiteral("Add Day"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString day_name = day_name_edit_->text();
+            runNetworkMutation(
+                QStringLiteral("Add Day"),
+                [token, trip_id, day_name](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.addDay(token, trip_id, revision, day_name);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(rename_day_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -847,17 +928,19 @@ namespace
                 appendLog(QStringLiteral("Select a day first"));
                 return;
             }
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.renameDay(token_, current_trip_id_, revision, day_id, day_name_edit_->text());
-            appendResult(QStringLiteral("Rename Day"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString day_name = day_name_edit_->text();
+            runNetworkMutation(
+                QStringLiteral("Rename Day"),
+                [token, trip_id, day_id, day_name](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.renameDay(token, trip_id, revision, day_id, day_name);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(remove_day_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -867,17 +950,18 @@ namespace
                 appendLog(QStringLiteral("Select a day first"));
                 return;
             }
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.removeDay(token_, current_trip_id_, revision, day_id);
-            appendResult(QStringLiteral("Remove Day"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            runNetworkMutation(
+                QStringLiteral("Remove Day"),
+                [token, trip_id, day_id](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.removeDay(token, trip_id, revision, day_id);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(move_day_up_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -889,21 +973,23 @@ namespace
                 return;
             }
             order.swapItemsAt(row, row - 1);
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.reorderDays(token_, current_trip_id_, revision, order);
-            appendResult(QStringLiteral("Move Day Up"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-                if (row - 1 >= 0)
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            runNetworkMutation(
+                QStringLiteral("Move Day Up"),
+                [token, trip_id, order](trip::QtTripClient &client, quint64 revision)
                 {
-                    days_table_->selectRow(row - 1);
-                }
-            } });
+                    return client.reorderDays(token, trip_id, revision, order);
+                },
+                [this, row](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip([this, row]()
+                                    {
+                        if (row - 1 >= 0)
+                        {
+                            days_table_->selectRow(row - 1);
+                        } });
+                }); });
 
         connect(move_day_down_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -915,18 +1001,21 @@ namespace
                 return;
             }
             order.swapItemsAt(row, row + 1);
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.reorderDays(token_, current_trip_id_, revision, order);
-            appendResult(QStringLiteral("Move Day Down"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-                days_table_->selectRow(row + 1);
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            runNetworkMutation(
+                QStringLiteral("Move Day Down"),
+                [token, trip_id, order](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.reorderDays(token, trip_id, revision, order);
+                },
+                [this, row](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip([this, row]()
+                                    {
+                        days_table_->selectRow(row + 1);
+                    });
+                }); });
 
         connect(add_plan_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -936,26 +1025,23 @@ namespace
                 appendLog(QStringLiteral("Select a day first"));
                 return;
             }
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.addPlanItem(
-                token_,
-                current_trip_id_,
-                day_id,
-                revision,
-                plan_name_edit_->text(),
-                plan_time_edit_->text(),
-                plan_notes_edit_->toPlainText(),
-                plan_category_edit_->text(),
-                plan_link_edit_->text());
-            appendResult(QStringLiteral("Add Plan Item"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString name = plan_name_edit_->text();
+            const QString time = plan_time_edit_->text();
+            const QString notes = plan_notes_edit_->toPlainText();
+            const QString category = plan_category_edit_->text();
+            const QString link = plan_link_edit_->text();
+            runNetworkMutation(
+                QStringLiteral("Add Plan Item"),
+                [token, trip_id, day_id, name, time, notes, category, link](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.addPlanItem(token, trip_id, day_id, revision, name, time, notes, category, link);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(update_plan_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -966,27 +1052,23 @@ namespace
                 appendLog(QStringLiteral("Select a plan item first"));
                 return;
             }
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.updatePlanItem(
-                token_,
-                current_trip_id_,
-                day_id,
-                revision,
-                item_id,
-                plan_name_edit_->text(),
-                plan_time_edit_->text(),
-                plan_notes_edit_->toPlainText(),
-                plan_category_edit_->text(),
-                plan_link_edit_->text());
-            appendResult(QStringLiteral("Update Plan Item"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString name = plan_name_edit_->text();
+            const QString time = plan_time_edit_->text();
+            const QString notes = plan_notes_edit_->toPlainText();
+            const QString category = plan_category_edit_->text();
+            const QString link = plan_link_edit_->text();
+            runNetworkMutation(
+                QStringLiteral("Update Plan Item"),
+                [token, trip_id, day_id, item_id, name, time, notes, category, link](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.updatePlanItem(token, trip_id, day_id, revision, item_id, name, time, notes, category, link);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(remove_plan_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -997,17 +1079,18 @@ namespace
                 appendLog(QStringLiteral("Select a plan item first"));
                 return;
             }
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.removePlanItem(token_, current_trip_id_, day_id, revision, item_id);
-            appendResult(QStringLiteral("Remove Plan Item"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            runNetworkMutation(
+                QStringLiteral("Remove Plan Item"),
+                [token, trip_id, day_id, item_id](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.removePlanItem(token, trip_id, day_id, revision, item_id);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(move_plan_up_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -1020,17 +1103,19 @@ namespace
                 return;
             }
             order.swapItemsAt(row, row - 1);
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.reorderPlanItems(token_, current_trip_id_, day.value(QStringLiteral("id")).toString(), revision, order);
-            appendResult(QStringLiteral("Move Plan Item Up"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString day_id = day.value(QStringLiteral("id")).toString();
+            runNetworkMutation(
+                QStringLiteral("Move Plan Item Up"),
+                [token, trip_id, day_id, order](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.reorderPlanItems(token, trip_id, day_id, revision, order);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(move_plan_down_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -1043,37 +1128,37 @@ namespace
                 return;
             }
             order.swapItemsAt(row, row + 1);
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.reorderPlanItems(token_, current_trip_id_, day.value(QStringLiteral("id")).toString(), revision, order);
-            appendResult(QStringLiteral("Move Plan Item Down"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString day_id = day.value(QStringLiteral("id")).toString();
+            runNetworkMutation(
+                QStringLiteral("Move Plan Item Down"),
+                [token, trip_id, day_id, order](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.reorderPlanItems(token, trip_id, day_id, revision, order);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(add_task_button_, &QPushButton::clicked, this, [this]()
                 {
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.addTask(
-                token_,
-                current_trip_id_,
-                revision,
-                task_text_edit_->text(),
-                task_assignee_combo_->currentData().toString(),
-                task_deadline_edit_->text());
-            appendResult(QStringLiteral("Add Task"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString text = task_text_edit_->text();
+            const QString assignee = task_assignee_combo_->currentData().toString();
+            const QString deadline = task_deadline_edit_->text();
+            runNetworkMutation(
+                QStringLiteral("Add Task"),
+                [token, trip_id, text, assignee, deadline](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.addTask(token, trip_id, revision, text, assignee, deadline);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(update_task_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -1083,25 +1168,22 @@ namespace
                 appendLog(QStringLiteral("Select a task first"));
                 return;
             }
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.updateTask(
-                token_,
-                current_trip_id_,
-                revision,
-                task_id,
-                task_text_edit_->text(),
-                task_done_check_->isChecked(),
-                task_assignee_combo_->currentData().toString(),
-                task_deadline_edit_->text());
-            appendResult(QStringLiteral("Update Task"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString text = task_text_edit_->text();
+            const bool done = task_done_check_->isChecked();
+            const QString assignee = task_assignee_combo_->currentData().toString();
+            const QString deadline = task_deadline_edit_->text();
+            runNetworkMutation(
+                QStringLiteral("Update Task"),
+                [token, trip_id, task_id, text, done, assignee, deadline](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.updateTask(token, trip_id, revision, task_id, text, done, assignee, deadline);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(toggle_task_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -1111,17 +1193,19 @@ namespace
                 appendLog(QStringLiteral("Select a task first"));
                 return;
             }
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.setTaskDone(token_, current_trip_id_, revision, task_id, task_done_check_->isChecked());
-            appendResult(QStringLiteral("Apply Task Done"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const bool done = task_done_check_->isChecked();
+            runNetworkMutation(
+                QStringLiteral("Apply Task Done"),
+                [token, trip_id, task_id, done](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.setTaskDone(token, trip_id, revision, task_id, done);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(remove_task_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -1131,79 +1215,100 @@ namespace
                 appendLog(QStringLiteral("Select a task first"));
                 return;
             }
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.removeTask(token_, current_trip_id_, revision, task_id);
-            appendResult(QStringLiteral("Remove Task"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            runNetworkMutation(
+                QStringLiteral("Remove Task"),
+                [token, trip_id, task_id](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.removeTask(token, trip_id, revision, task_id);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(save_budget_button_, &QPushButton::clicked, this, [this]()
                 {
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.setBudgetSettings(
-                token_,
-                current_trip_id_,
-                revision,
-                budget_currency_edit_->text(),
-                budget_limit_edit_->text().toDouble());
-            appendResult(QStringLiteral("Save Budget"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString currency = budget_currency_edit_->text();
+            const double limit = budget_limit_edit_->text().toDouble();
+            runNetworkMutation(
+                QStringLiteral("Save Budget"),
+                [token, trip_id, currency, limit](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.setBudgetSettings(token, trip_id, revision, currency, limit);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(add_expense_button_, &QPushButton::clicked, this, [this]()
                 {
-            const quint64 revision = fetchRevision();
-            if (revision == 0)
-            {
-                return;
-            }
-            const auto result = client_.addExpense(
-                token_,
-                current_trip_id_,
-                revision,
-                expense_amount_edit_->text().toDouble(),
-                expense_category_edit_->text(),
-                expense_payer_combo_->currentData().toString(),
-                expense_comment_edit_->text(),
-                expense_date_edit_->text(),
-                expense_day_combo_->currentData().toString());
-            appendResult(QStringLiteral("Add Expense"), result);
-            if (result.ok)
-            {
-                loadCurrentTrip();
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const double amount = expense_amount_edit_->text().toDouble();
+            const QString category = expense_category_edit_->text();
+            const QString payer = expense_payer_combo_->currentData().toString();
+            const QString comment = expense_comment_edit_->text();
+            const QString date = expense_date_edit_->text();
+            const QString day_id = expense_day_combo_->currentData().toString();
+            runNetworkMutation(
+                QStringLiteral("Add Expense"),
+                [token, trip_id, amount, category, payer, comment, date, day_id](trip::QtTripClient &client, quint64 revision)
+                {
+                    return client.addExpense(token, trip_id, revision, amount, category, payer, comment, date, day_id);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    loadCurrentTrip();
+                }); });
 
         connect(send_chat_button_, &QPushButton::clicked, this, [this]()
                 {
-            const auto result = client_.sendChatMessage(token_, current_trip_id_, chat_message_edit_->text());
-            appendResult(QStringLiteral("Send Chat"), result);
-            if (result.ok)
+            if (!hasCurrentTrip())
             {
-                chat_message_edit_->clear();
-                loadCurrentTrip();
-            } });
+                appendLog(QStringLiteral("Select a trip first"));
+                return;
+            }
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString text = chat_message_edit_->text();
+            runNetworkOperation(
+                QStringLiteral("Send Chat"),
+                [token, trip_id, text](trip::QtTripClient &client)
+                {
+                    return client.sendChatMessage(token, trip_id, text);
+                },
+                [this](const trip::QtApiResult &)
+                {
+                    chat_message_edit_->clear();
+                    loadCurrentTrip();
+                }); });
 
         connect(search_button_, &QPushButton::clicked, this, [this]()
                 {
-            const auto result = client_.searchInTrip(token_, current_trip_id_, search_query_edit_->text());
-            appendResult(QStringLiteral("Search"), result);
-            if (result.ok)
+            if (!hasCurrentTrip())
             {
-                populateSearchResults(result.payload.value(QStringLiteral("hits")).toArray());
-                populateRawJson(QString::fromUtf8(QJsonDocument(result.payload).toJson(QJsonDocument::Indented)));
-            } });
+                appendLog(QStringLiteral("Select a trip first"));
+                return;
+            }
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            const QString query = search_query_edit_->text();
+            runNetworkOperation(
+                QStringLiteral("Search"),
+                [token, trip_id, query](trip::QtTripClient &client)
+                {
+                    return client.searchInTrip(token, trip_id, query);
+                },
+                [this](const trip::QtApiResult &result)
+                {
+                    populateSearchResults(result.payload.value(QStringLiteral("hits")).toArray());
+                    populateRawJson(QString::fromUtf8(QJsonDocument(result.payload).toJson(QJsonDocument::Indented)));
+                }); });
 
         connect(fetch_events_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -1212,13 +1317,19 @@ namespace
                 appendLog(QStringLiteral("Select a trip first"));
                 return;
             }
-            const auto result = client_.getEventsSince(token_, current_trip_id_, 0);
-            appendResult(QStringLiteral("Fetch Events"), result);
-            if (result.ok)
-            {
-                populateEventsTable(result.payload.value(QStringLiteral("events")).toArray());
-                populateRawJson(QString::fromUtf8(QJsonDocument(result.payload).toJson(QJsonDocument::Indented)));
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            runNetworkOperation(
+                QStringLiteral("Fetch Events"),
+                [token, trip_id](trip::QtTripClient &client)
+                {
+                    return client.getEventsSince(token, trip_id, 0);
+                },
+                [this](const trip::QtApiResult &result)
+                {
+                    populateEventsTable(result.payload.value(QStringLiteral("events")).toArray());
+                    populateRawJson(QString::fromUtf8(QJsonDocument(result.payload).toJson(QJsonDocument::Indented)));
+                }); });
 
         connect(export_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -1227,30 +1338,34 @@ namespace
                 appendLog(QStringLiteral("Select a trip first"));
                 return;
             }
-            const auto result = client_.exportTripJson(token_, current_trip_id_);
-            appendResult(QStringLiteral("Export JSON"), result);
-            if (!result.ok)
-            {
-                return;
-            }
-
-            const QString json_text = result.payload.value(QStringLiteral("trip_json")).toString();
-            populateRawJson(json_text);
-            const QString file_path = QFileDialog::getSaveFileName(
-                this,
-                QStringLiteral("Export Trip JSON"),
-                current_trip_id_ + QStringLiteral(".json"),
-                QStringLiteral("JSON Files (*.json);;All Files (*)"));
-            if (file_path.isEmpty())
-            {
-                return;
-            }
-            QFile file(file_path);
-            if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
-            {
-                file.write(json_text.toUtf8());
-                appendLog(QStringLiteral("Exported to ") + file_path);
-            } });
+            const QString token = token_;
+            const QString trip_id = current_trip_id_;
+            runNetworkOperation(
+                QStringLiteral("Export JSON"),
+                [token, trip_id](trip::QtTripClient &client)
+                {
+                    return client.exportTripJson(token, trip_id);
+                },
+                [this, trip_id](const trip::QtApiResult &result)
+                {
+                    const QString json_text = result.payload.value(QStringLiteral("trip_json")).toString();
+                    populateRawJson(json_text);
+                    const QString file_path = QFileDialog::getSaveFileName(
+                        this,
+                        QStringLiteral("Export Trip JSON"),
+                        trip_id + QStringLiteral(".json"),
+                        QStringLiteral("JSON Files (*.json);;All Files (*)"));
+                    if (file_path.isEmpty())
+                    {
+                        return;
+                    }
+                    QFile file(file_path);
+                    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                    {
+                        file.write(json_text.toUtf8());
+                        appendLog(QStringLiteral("Exported to ") + file_path);
+                    }
+                }); });
 
         connect(import_button_, &QPushButton::clicked, this, [this]()
                 {
@@ -1275,19 +1390,27 @@ namespace
                 return;
             }
             const QString json_text = QString::fromUtf8(file.readAll());
-            const auto result = client_.importTripJson(token_, json_text);
-            appendResult(QStringLiteral("Import JSON"), result);
-            if (result.ok)
-            {
-                current_trip_id_ = result.payload.value(QStringLiteral("trip_id")).toString();
-                refreshTripsList(false);
-                selectTrip(current_trip_id_);
-                loadCurrentTrip();
-                if (live_sync_requested_)
+            const QString token = token_;
+            runNetworkOperation(
+                QStringLiteral("Import JSON"),
+                [token, json_text](trip::QtTripClient &client)
                 {
-                    connectLiveUpdates();
-                }
-            } });
+                    return client.importTripJson(token, json_text);
+                },
+                [this](const trip::QtApiResult &result)
+                {
+                    current_trip_id_ = result.payload.value(QStringLiteral("trip_id")).toString();
+                    refreshTripsList(false, [this]()
+                                     {
+                        selectTrip(current_trip_id_);
+                        loadCurrentTrip([this]()
+                                        {
+                            if (live_sync_requested_)
+                            {
+                                connectLiveUpdates();
+                            } });
+                        });
+                }); });
 
         connect(live_connect_button_, &QPushButton::clicked, this, [this]()
                 { connectLiveUpdates(); });
@@ -1368,6 +1491,192 @@ namespace
             } });
     }
 
+    void TripClientWindow::createNetworkSocket()
+    {
+        const QPointer<TripClientWindow> self(this);
+        QMetaObject::invokeMethod(
+            &network_context_,
+            [this, self]()
+            {
+                if (self.isNull())
+                {
+                    return;
+                }
+
+                socket_ = new QWebSocket();
+
+                connect(socket_, &QWebSocket::connected, this, [this]()
+                        {
+                    live_socket_active_ = true;
+                    manual_socket_close_ = false;
+                    socket_label_->setText(QStringLiteral("Live sync: connected"));
+                    appendLog(QStringLiteral("Live sync connected")); },
+                        Qt::QueuedConnection);
+
+                connect(socket_, &QWebSocket::disconnected, this, [this]()
+                        {
+                    live_socket_active_ = false;
+                    socket_label_->setText(QStringLiteral("Live sync: disconnected"));
+                    appendLog(QStringLiteral("Live sync disconnected"));
+                    const bool should_reconnect = live_sync_requested_ && !manual_socket_close_;
+                    manual_socket_close_ = false;
+                    if (should_reconnect)
+                    {
+                        scheduleReconnect();
+                    } },
+                        Qt::QueuedConnection);
+
+                connect(socket_, &QWebSocket::textMessageReceived, this, [this](const QString &payload)
+                        { handleSocketMessage(payload); },
+                        Qt::QueuedConnection);
+            },
+            Qt::BlockingQueuedConnection);
+    }
+
+    void TripClientWindow::destroyNetworkSocket()
+    {
+        QMetaObject::invokeMethod(
+            &network_context_,
+            [this]()
+            {
+                if (socket_ == nullptr)
+                {
+                    return;
+                }
+
+                QObject::disconnect(socket_, nullptr, this, nullptr);
+                socket_->close();
+                delete socket_;
+                socket_ = nullptr;
+            },
+            Qt::BlockingQueuedConnection);
+    }
+
+    void TripClientWindow::applyUiPolish()
+    {
+        setObjectName(QStringLiteral("TripClientWindow"));
+        setStyleSheet(QStringLiteral(R"(
+QWidget#TripClientWindow {
+    background: #f4efe6;
+    color: #28313a;
+    font-family: "Segoe UI", "Verdana";
+    font-size: 10pt;
+}
+QGroupBox {
+    background: #fffaf1;
+    border: 1px solid #dfd2be;
+    border-radius: 16px;
+    margin-top: 18px;
+    padding: 16px 12px 12px 12px;
+    font-weight: 600;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 16px;
+    padding: 0 8px;
+    color: #6c4d2f;
+}
+QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QDateEdit {
+    background: #fffdf8;
+    border: 1px solid #d7c7af;
+    border-radius: 10px;
+    padding: 7px 9px;
+    selection-background-color: #d88145;
+}
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QDateEdit:focus {
+    border: 1px solid #c86b32;
+    background: #ffffff;
+}
+QPushButton {
+    background: #2f5d62;
+    border: 0;
+    border-radius: 11px;
+    color: #ffffff;
+    font-weight: 600;
+    padding: 8px 13px;
+}
+QPushButton:hover {
+    background: #386f75;
+}
+QPushButton:pressed {
+    background: #23474b;
+}
+QPushButton:disabled {
+    background: #b8b1a8;
+    color: #f4efe6;
+}
+QListWidget, QTableWidget {
+    background: #fffdf8;
+    alternate-background-color: #f4eadb;
+    border: 1px solid #dfd2be;
+    border-radius: 12px;
+    gridline-color: #eadfce;
+    selection-background-color: #d88145;
+    selection-color: #ffffff;
+}
+QHeaderView::section {
+    background: #e7d8c1;
+    border: 0;
+    border-right: 1px solid #d3c2aa;
+    color: #3a332b;
+    font-weight: 700;
+    padding: 8px;
+}
+QTabWidget::pane {
+    border: 1px solid #dfd2be;
+    border-radius: 14px;
+    top: -1px;
+    background: #fffaf1;
+}
+QTabBar::tab {
+    background: #e8dcc9;
+    border-top-left-radius: 11px;
+    border-top-right-radius: 11px;
+    color: #5b4a3a;
+    font-weight: 600;
+    margin-right: 4px;
+    padding: 10px 18px;
+}
+QTabBar::tab:selected {
+    background: #fffaf1;
+    color: #2f5d62;
+}
+QSplitter::handle {
+    background: #dfd2be;
+}
+QLabel#networkStatus {
+    background: #eaf3ea;
+    border-radius: 10px;
+    color: #31533d;
+    font-weight: 600;
+    padding: 6px 9px;
+}
+QLabel#networkStatus[state="busy"] {
+    background: #fff0d6;
+    color: #7b4b19;
+}
+)"));
+
+        for (auto *button : findChildren<QPushButton *>())
+        {
+            button->setCursor(Qt::PointingHandCursor);
+            button->setMinimumHeight(34);
+        }
+
+        for (auto *table : findChildren<QTableWidget *>())
+        {
+            table->setAlternatingRowColors(true);
+            table->setShowGrid(false);
+            table->horizontalHeader()->setHighlightSections(false);
+            table->verticalHeader()->setDefaultSectionSize(32);
+        }
+
+        if (network_label_ != nullptr)
+        {
+            network_label_->setProperty("state", QStringLiteral("idle"));
+        }
+    }
+
     void TripClientWindow::appendLog(const QString &line)
     {
         log_text_->appendPlainText(line);
@@ -1387,6 +1696,113 @@ namespace
         appendLog(line);
     }
 
+    void TripClientWindow::runNetworkOperation(const QString &prefix, ApiTask task, ApiHandler on_success, ApiHandler on_failure)
+    {
+        const QString base_url = base_url_edit_->text().trimmed();
+        const QPointer<TripClientWindow> self(this);
+        setNetworkBusy(true, prefix);
+
+        const bool queued = QMetaObject::invokeMethod(
+            &network_context_,
+            [this, self, prefix, base_url, task = std::move(task), on_success = std::move(on_success), on_failure = std::move(on_failure)]() mutable
+            {
+                if (self.isNull())
+                {
+                    return;
+                }
+
+                network_client_.setBaseUrl(base_url);
+                const trip::QtApiResult result = task(network_client_);
+
+                QMetaObject::invokeMethod(
+                    this,
+                    [self, prefix, result, on_success = std::move(on_success), on_failure = std::move(on_failure)]() mutable
+                    {
+                        if (self.isNull())
+                        {
+                            return;
+                        }
+
+                        self->appendResult(prefix, result);
+                        self->setNetworkBusy(false, prefix);
+                        if (result.ok)
+                        {
+                            if (on_success)
+                            {
+                                on_success(result);
+                            }
+                        }
+                        else if (on_failure)
+                        {
+                            on_failure(result);
+                        }
+                    },
+                    Qt::QueuedConnection);
+            },
+            Qt::QueuedConnection);
+
+        if (!queued)
+        {
+            setNetworkBusy(false, prefix);
+            appendLog(prefix + QStringLiteral(": failed to queue network task"));
+        }
+    }
+
+    void TripClientWindow::runNetworkMutation(
+        const QString &prefix,
+        std::function<trip::QtApiResult(trip::QtTripClient &, quint64)> task,
+        ApiHandler on_success)
+    {
+        if (!hasCurrentTrip())
+        {
+            appendLog(QStringLiteral("Select a trip first"));
+            return;
+        }
+
+        const QString token = token_;
+        const QString trip_id = current_trip_id_;
+        runNetworkOperation(
+            prefix,
+            [token, trip_id, task = std::move(task)](trip::QtTripClient &client) mutable
+            {
+                const auto revision_result = client.getRevision(token, trip_id);
+                if (!revision_result.ok)
+                {
+                    return revision_result;
+                }
+
+                const quint64 revision = revision_result.payload.value(QStringLiteral("revision")).toVariant().toULongLong();
+                return task(client, revision);
+            },
+            std::move(on_success));
+    }
+
+    void TripClientWindow::setNetworkBusy(bool busy, const QString &operation)
+    {
+        if (busy)
+        {
+            ++pending_network_jobs_;
+        }
+        else if (pending_network_jobs_ > 0)
+        {
+            --pending_network_jobs_;
+        }
+
+        if (network_label_ == nullptr)
+        {
+            return;
+        }
+
+        const bool has_pending_jobs = pending_network_jobs_ > 0;
+        network_label_->setProperty("state", has_pending_jobs ? QStringLiteral("busy") : QStringLiteral("idle"));
+        network_label_->setText(has_pending_jobs
+                                    ? QStringLiteral("Network: %1 queued (%2)").arg(operation).arg(pending_network_jobs_)
+                                    : QStringLiteral("Network: idle"));
+        network_label_->style()->unpolish(network_label_);
+        network_label_->style()->polish(network_label_);
+        network_label_->update();
+    }
+
     bool TripClientWindow::hasSession() const
     {
         return !token_.isEmpty();
@@ -1397,26 +1813,7 @@ namespace
         return hasSession() && !current_trip_id_.isEmpty();
     }
 
-    quint64 TripClientWindow::fetchRevision()
-    {
-        if (!hasCurrentTrip())
-        {
-            appendLog(QStringLiteral("Select a trip first"));
-            return 0;
-        }
-        const auto result = client_.getRevision(token_, current_trip_id_);
-        if (!result.ok)
-        {
-            appendResult(QStringLiteral("Get Revision"), result);
-            return 0;
-        }
-        current_revision_ = result.payload.value(QStringLiteral("revision")).toVariant().toULongLong();
-        last_seen_revision_ = current_revision_;
-        revision_label_->setText(QStringLiteral("Revision: ") + QString::number(current_revision_));
-        return current_revision_;
-    }
-
-    void TripClientWindow::refreshTripsList(bool keep_selection)
+    void TripClientWindow::refreshTripsList(bool keep_selection, LoadHandler on_loaded)
     {
         if (!hasSession())
         {
@@ -1424,19 +1821,31 @@ namespace
             return;
         }
 
+        const QString token = token_;
         const QString previously_selected = keep_selection ? selectedTripId() : current_trip_id_;
-        const auto result = client_.listTrips(token_);
-        if (!result.ok)
-        {
-            appendResult(QStringLiteral("List Trips"), result);
-            return;
-        }
+        runNetworkOperation(
+            QStringLiteral("List Trips"),
+            [token](trip::QtTripClient &client)
+            {
+                return client.listTrips(token);
+            },
+            [this, token, previously_selected, on_loaded = std::move(on_loaded)](const trip::QtApiResult &result) mutable
+            {
+                if (token != token_)
+                {
+                    return;
+                }
 
-        populateTripsList(result.payload.value(QStringLiteral("trips")).toArray());
-        if (!previously_selected.isEmpty())
-        {
-            selectTrip(previously_selected);
-        }
+                populateTripsList(result.payload.value(QStringLiteral("trips")).toArray());
+                if (!previously_selected.isEmpty())
+                {
+                    selectTrip(previously_selected);
+                }
+                if (on_loaded)
+                {
+                    on_loaded();
+                }
+            });
     }
 
     void TripClientWindow::selectTrip(const QString &trip_id)
@@ -1452,7 +1861,7 @@ namespace
         }
     }
 
-    void TripClientWindow::loadCurrentTrip()
+    void TripClientWindow::loadCurrentTrip(LoadHandler on_loaded)
     {
         if (!hasCurrentTrip())
         {
@@ -1471,66 +1880,83 @@ namespace
             raw_json_text_->clear();
             current_trip_ = {};
             clearTaskEditor();
+            if (on_loaded)
+            {
+                on_loaded();
+            }
             return;
         }
 
+        const QString token = token_;
+        const QString trip_id = current_trip_id_;
         const QString previously_selected_task = selectedTaskId();
-        const auto result = client_.getSnapshot(token_, current_trip_id_);
-        if (!result.ok)
-        {
-            appendResult(QStringLiteral("Snapshot"), result);
-            return;
-        }
-
-        current_trip_ = result.payload.value(QStringLiteral("trip")).toObject();
-        current_revision_ = result.payload.value(QStringLiteral("revision")).toVariant().toULongLong();
-        last_seen_revision_ = current_revision_;
-        trip_id_label_->setText(QStringLiteral("Trip ID: ") + current_trip_id_);
-        revision_label_->setText(QStringLiteral("Revision: ") + QString::number(current_revision_));
-        counts_label_->setText(
-            QStringLiteral("Days: %1 | Tasks: %2 | Expenses: %3 | Members: %4")
-                .arg(result.payload.value(QStringLiteral("days_count")).toInt())
-                .arg(result.payload.value(QStringLiteral("tasks_count")).toInt())
-                .arg(result.payload.value(QStringLiteral("expenses_count")).toInt())
-                .arg(result.payload.value(QStringLiteral("members_count")).toInt()));
-
-        const QJsonObject info = current_trip_.value(QStringLiteral("info")).toObject();
-        title_edit_->setText(info.value(QStringLiteral("title")).toString());
-        start_date_edit_->setDate(QDate::fromString(info.value(QStringLiteral("start_date")).toString(), QStringLiteral("yyyy-MM-dd")));
-        end_date_edit_->setDate(QDate::fromString(info.value(QStringLiteral("end_date")).toString(), QStringLiteral("yyyy-MM-dd")));
-        description_edit_->setPlainText(info.value(QStringLiteral("description")).toString());
-        budget_currency_edit_->setText(current_trip_.value(QStringLiteral("budget")).toObject().value(QStringLiteral("currency")).toString());
-        budget_limit_edit_->setText(QString::number(current_trip_.value(QStringLiteral("budget")).toObject().value(QStringLiteral("total_limit")).toDouble()));
-
-        populateMembersTable(current_trip_.value(QStringLiteral("members")).toObject());
-        populateDaysTable(current_trip_.value(QStringLiteral("days")).toArray());
-        if (days_table_->rowCount() > 0 && days_table_->currentRow() < 0)
-        {
-            days_table_->selectRow(0);
-        }
-        populatePlanTable(selectedDayObject());
-        populateTasksTable(current_trip_.value(QStringLiteral("tasks")).toArray());
-        if (tasks_table_->rowCount() > 0)
-        {
-            if (!previously_selected_task.isEmpty())
+        runNetworkOperation(
+            QStringLiteral("Snapshot"),
+            [token, trip_id](trip::QtTripClient &client)
             {
-                selectTask(previously_selected_task);
-            }
-            if (tasks_table_->currentRow() < 0)
+                return client.getSnapshot(token, trip_id);
+            },
+            [this, token, trip_id, previously_selected_task, on_loaded = std::move(on_loaded)](const trip::QtApiResult &result) mutable
             {
-                tasks_table_->selectRow(0);
-            }
-        }
-        else
-        {
-            clearTaskEditor();
-        }
-        populateExpensesTable(current_trip_.value(QStringLiteral("expenses")).toArray());
-        populateChatTable(current_trip_.value(QStringLiteral("chat")).toArray());
-        populateEventsTable(current_trip_.value(QStringLiteral("events")).toArray());
-        populateRawJson(QString::fromUtf8(QJsonDocument(current_trip_).toJson(QJsonDocument::Indented)));
-        refreshMemberEditors();
-        refreshBudgetSummary();
+                if (token != token_ || trip_id != current_trip_id_)
+                {
+                    return;
+                }
+
+                current_trip_ = result.payload.value(QStringLiteral("trip")).toObject();
+                current_revision_ = result.payload.value(QStringLiteral("revision")).toVariant().toULongLong();
+                last_seen_revision_ = current_revision_;
+                trip_id_label_->setText(QStringLiteral("Trip ID: ") + trip_id);
+                revision_label_->setText(QStringLiteral("Revision: ") + QString::number(current_revision_));
+                counts_label_->setText(
+                    QStringLiteral("Days: %1 | Tasks: %2 | Expenses: %3 | Members: %4")
+                        .arg(result.payload.value(QStringLiteral("days_count")).toInt())
+                        .arg(result.payload.value(QStringLiteral("tasks_count")).toInt())
+                        .arg(result.payload.value(QStringLiteral("expenses_count")).toInt())
+                        .arg(result.payload.value(QStringLiteral("members_count")).toInt()));
+
+                const QJsonObject info = current_trip_.value(QStringLiteral("info")).toObject();
+                title_edit_->setText(info.value(QStringLiteral("title")).toString());
+                start_date_edit_->setDate(QDate::fromString(info.value(QStringLiteral("start_date")).toString(), QStringLiteral("yyyy-MM-dd")));
+                end_date_edit_->setDate(QDate::fromString(info.value(QStringLiteral("end_date")).toString(), QStringLiteral("yyyy-MM-dd")));
+                description_edit_->setPlainText(info.value(QStringLiteral("description")).toString());
+                budget_currency_edit_->setText(current_trip_.value(QStringLiteral("budget")).toObject().value(QStringLiteral("currency")).toString());
+                budget_limit_edit_->setText(QString::number(current_trip_.value(QStringLiteral("budget")).toObject().value(QStringLiteral("total_limit")).toDouble()));
+
+                populateMembersTable(current_trip_.value(QStringLiteral("members")).toObject());
+                populateDaysTable(current_trip_.value(QStringLiteral("days")).toArray());
+                if (days_table_->rowCount() > 0 && days_table_->currentRow() < 0)
+                {
+                    days_table_->selectRow(0);
+                }
+                populatePlanTable(selectedDayObject());
+                populateTasksTable(current_trip_.value(QStringLiteral("tasks")).toArray());
+                if (tasks_table_->rowCount() > 0)
+                {
+                    if (!previously_selected_task.isEmpty())
+                    {
+                        selectTask(previously_selected_task);
+                    }
+                    if (tasks_table_->currentRow() < 0)
+                    {
+                        tasks_table_->selectRow(0);
+                    }
+                }
+                else
+                {
+                    clearTaskEditor();
+                }
+                populateExpensesTable(current_trip_.value(QStringLiteral("expenses")).toArray());
+                populateChatTable(current_trip_.value(QStringLiteral("chat")).toArray());
+                populateEventsTable(current_trip_.value(QStringLiteral("events")).toArray());
+                populateRawJson(QString::fromUtf8(QJsonDocument(current_trip_).toJson(QJsonDocument::Indented)));
+                refreshMemberEditors();
+                refreshBudgetSummary();
+                if (on_loaded)
+                {
+                    on_loaded();
+                }
+            });
     }
 
     void TripClientWindow::refreshBudgetSummary()
@@ -1540,26 +1966,45 @@ namespace
             budget_summary_text_->clear();
             return;
         }
-        const auto result = client_.getBudgetSummary(token_, current_trip_id_);
-        if (!result.ok)
-        {
-            budget_summary_text_->setPlainText(QStringLiteral("Budget summary unavailable: ") + result.status);
-            return;
-        }
-        const QJsonObject summary = result.payload.value(QStringLiteral("summary")).toObject();
-        QStringList lines;
-        lines << QStringLiteral("Total: %1").arg(summary.value(QStringLiteral("total_expenses")).toDouble());
-        const auto by_category = summary.value(QStringLiteral("by_category")).toObject();
-        for (auto it = by_category.begin(); it != by_category.end(); ++it)
-        {
-            lines << QStringLiteral("Category %1: %2").arg(it.key()).arg(it.value().toDouble());
-        }
-        const auto balance = summary.value(QStringLiteral("balance_by_user")).toObject();
-        for (auto it = balance.begin(); it != balance.end(); ++it)
-        {
-            lines << QStringLiteral("Balance %1: %2").arg(it.key()).arg(it.value().toDouble());
-        }
-        budget_summary_text_->setPlainText(lines.join(QLatin1Char('\n')));
+
+        budget_summary_text_->setPlainText(QStringLiteral("Loading budget summary..."));
+        const QString token = token_;
+        const QString trip_id = current_trip_id_;
+        runNetworkOperation(
+            QStringLiteral("Budget Summary"),
+            [token, trip_id](trip::QtTripClient &client)
+            {
+                return client.getBudgetSummary(token, trip_id);
+            },
+            [this, token, trip_id](const trip::QtApiResult &result)
+            {
+                if (token != token_ || trip_id != current_trip_id_)
+                {
+                    return;
+                }
+
+                const QJsonObject summary = result.payload.value(QStringLiteral("summary")).toObject();
+                QStringList lines;
+                lines << QStringLiteral("Total: %1").arg(summary.value(QStringLiteral("total_expenses")).toDouble());
+                const auto by_category = summary.value(QStringLiteral("by_category")).toObject();
+                for (auto it = by_category.begin(); it != by_category.end(); ++it)
+                {
+                    lines << QStringLiteral("Category %1: %2").arg(it.key()).arg(it.value().toDouble());
+                }
+                const auto balance = summary.value(QStringLiteral("balance_by_user")).toObject();
+                for (auto it = balance.begin(); it != balance.end(); ++it)
+                {
+                    lines << QStringLiteral("Balance %1: %2").arg(it.key()).arg(it.value().toDouble());
+                }
+                budget_summary_text_->setPlainText(lines.join(QLatin1Char('\n')));
+            },
+            [this, token, trip_id](const trip::QtApiResult &result)
+            {
+                if (token == token_ && trip_id == current_trip_id_)
+                {
+                    budget_summary_text_->setPlainText(QStringLiteral("Budget summary unavailable: ") + result.status);
+                }
+            });
     }
 
     void TripClientWindow::refreshMemberEditors()
@@ -1870,21 +2315,60 @@ namespace
         live_sync_requested_ = true;
         reconnect_timer_.stop();
         const QNetworkRequest request = client_.updatesWebSocketRequest(token_, current_trip_id_, last_seen_revision_);
-        if (socket_.state() != QAbstractSocket::UnconnectedState)
-        {
-            manual_socket_close_ = true;
-            socket_.close();
-            QTimer::singleShot(150, this, [this, request]()
-                               {
-                manual_socket_close_ = false;
-                socket_label_->setText(QStringLiteral("Live sync: connecting..."));
-                socket_.open(request); });
-            return;
-        }
-
-        manual_socket_close_ = false;
+        const bool close_before_open = live_socket_active_;
+        manual_socket_close_ = close_before_open;
+        live_socket_active_ = true;
         socket_label_->setText(QStringLiteral("Live sync: connecting..."));
-        socket_.open(request);
+
+        const QPointer<TripClientWindow> self(this);
+        const bool queued = QMetaObject::invokeMethod(
+            &network_context_,
+            [this, self, request, close_before_open]()
+            {
+                if (self.isNull() || socket_ == nullptr)
+                {
+                    return;
+                }
+
+                const auto open_socket = [this, self, request]()
+                {
+                    if (self.isNull() || socket_ == nullptr)
+                    {
+                        return;
+                    }
+
+                    QMetaObject::invokeMethod(
+                        this,
+                        [self]()
+                        {
+                            if (!self.isNull())
+                            {
+                                self->manual_socket_close_ = false;
+                                self->socket_label_->setText(QStringLiteral("Live sync: connecting..."));
+                            }
+                        },
+                        Qt::QueuedConnection);
+                    socket_->open(request);
+                };
+
+                if (close_before_open && socket_->state() != QAbstractSocket::UnconnectedState)
+                {
+                    socket_->close();
+                    QTimer::singleShot(150, socket_, open_socket);
+                    return;
+                }
+
+                open_socket();
+            },
+            Qt::QueuedConnection);
+
+        if (!queued)
+        {
+            live_socket_active_ = false;
+            manual_socket_close_ = false;
+            socket_label_->setText(QStringLiteral("Live sync: disconnected"));
+            appendLog(QStringLiteral("Failed to queue live sync connection"));
+        }
     }
 
     void TripClientWindow::disconnectLiveUpdates(bool manual_disconnect)
@@ -1895,8 +2379,28 @@ namespace
         }
         reconnect_timer_.stop();
         manual_socket_close_ = true;
-        socket_.close();
+        live_socket_active_ = false;
         socket_label_->setText(QStringLiteral("Live sync: disconnected"));
+
+        const QPointer<TripClientWindow> self(this);
+        const bool queued = QMetaObject::invokeMethod(
+            &network_context_,
+            [this, self]()
+            {
+                if (self.isNull() || socket_ == nullptr)
+                {
+                    return;
+                }
+
+                socket_->close();
+            },
+            Qt::QueuedConnection);
+
+        if (!queued)
+        {
+            manual_socket_close_ = false;
+            appendLog(QStringLiteral("Failed to queue live sync disconnect"));
+        }
     }
 
     void TripClientWindow::scheduleReconnect()

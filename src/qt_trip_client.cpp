@@ -3,13 +3,13 @@
 #include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonParseError>
-#include <QMetaObject>
 #include <QObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
-#include <QThread>
 #include <QTimer>
 #include <QUrlQuery>
+
+#include <utility>
 
 namespace trip
 {
@@ -606,24 +606,8 @@ namespace trip
 
     QtApiResult QtTripClient::runRequest(QNetworkRequest request, const QByteArray &body)
     {
-        QtApiResult result;
-        QThread worker_thread;
-        QObject worker_context;
-        worker_context.moveToThread(&worker_thread);
-        worker_thread.start();
-
-        QMetaObject::invokeMethod(
-            &worker_context,
-            [&result, request, body]()
-            {
-                QNetworkAccessManager network;
-                result = executeBlockingRequest(network, request, body);
-            },
-            Qt::BlockingQueuedConnection);
-
-        worker_thread.quit();
-        worker_thread.wait();
-        return result;
+        QNetworkAccessManager network;
+        return executeBlockingRequest(network, std::move(request), body);
     }
 
     QUrl QtTripClient::makeUrl(const QString &path) const
