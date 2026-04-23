@@ -14,7 +14,9 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGroupBox>
+#include <QGuiApplication>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -30,6 +32,9 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QRect>
+#include <QScreen>
+#include <QScrollArea>
 #include <QSettings>
 #include <QSplitter>
 #include <QStyle>
@@ -42,6 +47,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
 #include <functional>
 #include <utility>
 
@@ -90,9 +96,17 @@ namespace
         void buildUi()
         {
             setWindowTitle(QStringLiteral("Trip Planner Qt Client"));
-            resize(1520, 940);
+            const QRect available_geometry = QGuiApplication::primaryScreen() != nullptr
+                                                 ? QGuiApplication::primaryScreen()->availableGeometry()
+                                                 : QRect(0, 0, 1280, 800);
+            const int window_width = std::max(760, std::min(1400, available_geometry.width() - 80));
+            const int window_height = std::max(560, std::min(820, available_geometry.height() - 100));
+            resize(window_width, window_height);
+            setMinimumSize(760, 560);
 
             auto *root_layout = new QVBoxLayout(this);
+            root_layout->setContentsMargins(14, 14, 14, 14);
+            root_layout->setSpacing(10);
 
             auto *splitter = new QSplitter();
             splitter->setChildrenCollapsible(false);
@@ -100,6 +114,8 @@ namespace
 
             auto *sidebar = new QWidget();
             auto *sidebar_layout = new QVBoxLayout(sidebar);
+            sidebar_layout->setContentsMargins(12, 8, 12, 12);
+            sidebar_layout->setSpacing(10);
 
             auto *server_group = new QGroupBox(QStringLiteral("Session"));
             auto *server_layout = new QFormLayout(server_group);
@@ -158,6 +174,8 @@ namespace
 
             auto *main_area = new QWidget();
             auto *main_layout = new QVBoxLayout(main_area);
+            main_layout->setContentsMargins(12, 8, 12, 12);
+            main_layout->setSpacing(10);
 
             auto *trip_info_group = new QGroupBox(QStringLiteral("Current Trip"));
             auto *trip_info_layout = new QFormLayout(trip_info_group);
@@ -214,10 +232,22 @@ namespace
             main_layout->addWidget(tabs_, 1);
             main_layout->addWidget(log_text_, 1);
 
-            splitter->addWidget(sidebar);
-            splitter->addWidget(main_area);
+            auto *sidebar_scroll = new QScrollArea();
+            sidebar_scroll->setFrameShape(QFrame::NoFrame);
+            sidebar_scroll->setWidgetResizable(true);
+            sidebar_scroll->setWidget(sidebar);
+            sidebar_scroll->setMinimumWidth(330);
+
+            auto *main_scroll = new QScrollArea();
+            main_scroll->setFrameShape(QFrame::NoFrame);
+            main_scroll->setWidgetResizable(true);
+            main_scroll->setWidget(main_area);
+
+            splitter->addWidget(sidebar_scroll);
+            splitter->addWidget(main_scroll);
             splitter->setStretchFactor(0, 0);
             splitter->setStretchFactor(1, 1);
+            splitter->setSizes({330, std::max(430, window_width - 380)});
         }
 
         void buildOverviewTab()
@@ -1567,7 +1597,7 @@ QGroupBox {
     border: 1px solid #dfd2be;
     border-radius: 16px;
     margin-top: 18px;
-    padding: 16px 12px 12px 12px;
+    padding: 18px 14px 14px 14px;
     font-weight: 600;
 }
 QGroupBox::title {
@@ -1580,8 +1610,12 @@ QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QDateEdit {
     background: #fffdf8;
     border: 1px solid #d7c7af;
     border-radius: 10px;
-    padding: 7px 9px;
+    min-height: 28px;
+    padding: 5px 9px;
     selection-background-color: #d88145;
+}
+QTextEdit, QPlainTextEdit {
+    min-height: 52px;
 }
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QDateEdit:focus {
     border: 1px solid #c86b32;
@@ -1593,7 +1627,8 @@ QPushButton {
     border-radius: 11px;
     color: #ffffff;
     font-weight: 600;
-    padding: 8px 13px;
+    min-height: 30px;
+    padding: 6px 13px;
 }
 QPushButton:hover {
     background: #386f75;
@@ -1644,6 +1679,10 @@ QTabBar::tab:selected {
 QSplitter::handle {
     background: #dfd2be;
 }
+QScrollArea {
+    background: transparent;
+    border: 0;
+}
 QLabel#networkStatus {
     background: #eaf3ea;
     border-radius: 10px;
@@ -1660,7 +1699,28 @@ QLabel#networkStatus[state="busy"] {
         for (auto *button : findChildren<QPushButton *>())
         {
             button->setCursor(Qt::PointingHandCursor);
-            button->setMinimumHeight(34);
+            button->setMinimumHeight(36);
+        }
+
+        for (auto *line_edit : findChildren<QLineEdit *>())
+        {
+            line_edit->setMinimumHeight(34);
+        }
+
+        for (auto *combo : findChildren<QComboBox *>())
+        {
+            combo->setMinimumHeight(34);
+        }
+
+        for (auto *date_edit : findChildren<QDateEdit *>())
+        {
+            date_edit->setMinimumHeight(34);
+        }
+
+        for (auto *form : findChildren<QFormLayout *>())
+        {
+            form->setHorizontalSpacing(12);
+            form->setVerticalSpacing(10);
         }
 
         for (auto *table : findChildren<QTableWidget *>())
