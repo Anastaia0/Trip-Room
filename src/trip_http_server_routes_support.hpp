@@ -18,6 +18,10 @@ namespace trip::detail
 
         [[nodiscard]] std::string param(const std::string &key) const
         {
+            if (key == "token")
+            {
+                return authorizationBearerToken(req);
+            }
             const auto in_body = body.find(key);
             if (in_body != body.end())
             {

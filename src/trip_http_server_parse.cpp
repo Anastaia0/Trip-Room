@@ -91,6 +91,23 @@ namespace trip::detail
         return {target.substr(0, question_pos), parseForm(target.substr(question_pos + 1))};
     }
 
+    std::string authorizationBearerToken(const http::request<http::string_body> &req)
+    {
+        const auto header = req[http::field::authorization];
+        if (header.empty())
+        {
+            return {};
+        }
+
+        constexpr std::string_view prefix = "Bearer ";
+        std::string_view value{header.data(), header.size()};
+        if (!value.starts_with(prefix) || value.size() <= prefix.size())
+        {
+            return {};
+        }
+        return std::string(value.substr(prefix.size()));
+    }
+
     uint64_t parseUint64(const std::string &text)
     {
         if (text.empty())

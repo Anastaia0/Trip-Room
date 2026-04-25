@@ -133,3 +133,37 @@ ctest --test-dir build --output-on-failure
 
 - C++20
 - GoogleTest (через `FetchContent` в `CMakeLists.txt`)
+
+## Qt-клиент (desktop)
+
+В проект добавлена клиентская часть на Qt:
+
+- API-клиент: `include/trip/qt_trip_client.hpp`, `src/qt_trip_client.cpp`
+- UI-приложение (Qt Widgets + WebSockets): `src/qt_trip_client_main.cpp` (target `trip_qt_client_app`)
+
+Поддержан полноценный desktop-клиент для основных разделов ТЗ:
+
+- `health`, регистрация и вход
+- список доступных поездок и выбор активной поездки
+- создание, обновление и удаление поездки
+- приглашения и управление участниками
+- дни/этапы: add / rename / remove / reorder
+- пункты плана: add / update / remove / reorder
+- задачи: add / update / done / remove
+- бюджет и расходы
+- чат, поиск, история событий
+- экспорт/импорт JSON
+- live-sync через `ws/updates` с переподключением и догрузкой событий по ревизии
+
+### Тесты клиента
+
+Добавлены интеграционные тесты для Qt-клиента и realtime-сценариев:
+
+- `tests/trip_qt_client_tests.cpp`
+
+Тесты автоматически подключаются в `trip_logic_tests`, если одновременно доступны:
+
+- Boost (`system/asio/beast`) для HTTP-сервера
+- Qt (Qt6 или Qt5: Core/Network/Widgets/WebSockets)
+
+Если Qt не найден, CMake оставляет серверную часть и существующие тесты рабочими, а Qt-таргеты/тесты отключает без ошибки конфигурации.

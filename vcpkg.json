@@ -5,6 +5,15 @@
   "dependencies": [
     "boost-system",
     "boost-asio",
-    "boost-beast"
+    "boost-beast",
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": [
+        "network",
+        "widgets"
+      ]
+    },
+    "qtwebsockets"
   ]
 }

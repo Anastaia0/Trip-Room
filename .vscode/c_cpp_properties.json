@@ -2,12 +2,33 @@
   "version": 4,
   "configurations": [
     {
-      "name": "Win32",
-      "defines": [],
+      "name": "x64-Qt",
+      "defines": [
+        "_WIN32_WINNT=0x0A00",
+        "UNICODE",
+        "_UNICODE",
+        "WIN32",
+        "_WINDOWS",
+        "QT_CORE_LIB",
+        "QT_GUI_LIB",
+        "QT_WIDGETS_LIB",
+        "QT_NETWORK_LIB",
+        "QT_WEBSOCKETS_LIB"
+      ],
+      "compilerPath": "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe",
       "includePath": [
         "${workspaceFolder}/include",
         "${workspaceFolder}/src",
         "${workspaceFolder}/tests",
+        "C:/tools/vcpkg/installed/x64-windows/include",
+        "C:/Qt/6.8.3/msvc2022_64/include",
+        "C:/Qt/6.8.3/msvc2022_64/include/QtCore",
+        "C:/Qt/6.8.3/msvc2022_64/include/QtGui",
+        "C:/Qt/6.8.3/msvc2022_64/include/QtWidgets",
+        "C:/Qt/6.8.3/msvc2022_64/include/QtNetwork",
+        "C:/Qt/6.8.3/msvc2022_64/include/QtWebSockets",
+        "C:/Qt/6.8.3/msvc2022_64/mkspecs/win32-msvc",
+        "C:/Qt/6.8.3/msvc2022_64/include/**",
         "${workspaceFolder}/**"
       ],
       "browse": {
@@ -15,6 +36,14 @@
           "${workspaceFolder}/include",
           "${workspaceFolder}/src",
           "${workspaceFolder}/tests",
+          "C:/tools/vcpkg/installed/x64-windows/include",
+          "C:/Qt/6.8.3/msvc2022_64/include",
+          "C:/Qt/6.8.3/msvc2022_64/include/QtCore",
+          "C:/Qt/6.8.3/msvc2022_64/include/QtGui",
+          "C:/Qt/6.8.3/msvc2022_64/include/QtWidgets",
+          "C:/Qt/6.8.3/msvc2022_64/include/QtNetwork",
+          "C:/Qt/6.8.3/msvc2022_64/include/QtWebSockets",
+          "C:/Qt/6.8.3/msvc2022_64/mkspecs/win32-msvc",
           "${workspaceFolder}"
         ],
         "limitSymbolsToIncludedHeaders": false
